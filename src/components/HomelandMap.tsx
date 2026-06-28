@@ -53,7 +53,13 @@ export interface HomelandMapProps {
   showZones?: boolean;
   showConnectors?: boolean;
   scanline?: boolean;
+  /** Active state filter (uppercase 2-letter code) — highlights that state. */
+  selectedState?: string | null;
+  /** Click a state/marker to drive the shared filter. Toggle: same code -> null. */
+  onSelectState?: (code: string | null) => void;
 }
+
+const SELECTED_COLOR = "#f3c25a";
 
 type MapStatus = "loading" | "ready" | "failed";
 
@@ -133,6 +139,8 @@ export default function HomelandMap({
   showZones = true,
   showConnectors = true,
   scanline = true,
+  selectedState = null,
+  onSelectState,
 }: HomelandMapProps) {
   const mapStatus = useUsMap();
   const svgRef = useRef<SVGSVGElement>(null);
@@ -222,6 +230,14 @@ export default function HomelandMap({
           st.strokeWidth = "1.1";
           st.filter = `drop-shadow(0 0 3px ${hexA(SOURCED_COLOR, 0.7)})`;
         }
+        // active state filter highlight overrides the occupied tint
+        if (selectedState && code.toUpperCase() === selectedState) {
+          st.fill = hexA(SELECTED_COLOR, 0.18);
+          st.stroke = SELECTED_COLOR;
+          st.strokeWidth = "1.4";
+          st.filter = `drop-shadow(0 0 4px ${hexA(SELECTED_COLOR, 0.8)})`;
+        }
+        if (onSelectState) st.cursor = "pointer";
         return { code, d: U[code], style: st };
       })
     : [];
@@ -229,6 +245,7 @@ export default function HomelandMap({
   // markers / lines / zones / labels only after centers are measured
   type Marker = {
     id: string;
+    code: string;
     cx: number;
     cy: number;
     sourced: boolean;
@@ -267,6 +284,7 @@ export default function HomelandMap({
         const sourced = s.data_class === "official";
         built.push({
           id: s.id,
+          code,
           cx,
           cy,
           sourced,
@@ -403,6 +421,13 @@ export default function HomelandMap({
     return { els, leaders };
   }
 
+  // toggle the shared state filter: clicking the active state clears it
+  function toggleState(code: string) {
+    if (!onSelectState) return;
+    const up = code.toUpperCase();
+    onSelectState(selectedState === up ? null : up);
+  }
+
   return (
     <div style={boardWrap}>
       <div style={gridBg} />
@@ -419,7 +444,13 @@ export default function HomelandMap({
 
         <g style={baseGlow}>
           {statePaths.map((s) => (
-            <path key={s.code} d={s.d} data-state={s.code} style={s.style} />
+            <path
+              key={s.code}
+              d={s.d}
+              data-state={s.code}
+              style={s.style}
+              onClick={onSelectState ? () => toggleState(s.code) : undefined}
+            />
           ))}
         </g>
 
@@ -455,7 +486,11 @@ export default function HomelandMap({
 
         <g>
           {markers.map((m) => (
-            <g key={m.id}>
+            <g
+              key={m.id}
+              onClick={onSelectState ? () => toggleState(m.code) : undefined}
+              style={onSelectState ? { cursor: "pointer" } : undefined}
+            >
               {m.sourced && (
                 <circle cx={m.cx} cy={m.cy} r={5} fill="none" stroke={SOURCED_COLOR} strokeWidth="0.9" style={m.ringStyle} />
               )}

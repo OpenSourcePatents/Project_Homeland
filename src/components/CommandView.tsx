@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useEffect, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useState } from "react";
 import HomelandMap from "@/components/HomelandMap";
 import type { PublicSuspect } from "@/lib/public-suspect";
 import { hexA } from "@/lib/color";
@@ -13,7 +13,10 @@ import { isMappable } from "@/lib/us-states";
      - the left rail shows REAL aggregates of the official records instead of
        fabricated threat-network rosters.
 
-   Client component: receives plain serializable PublicSuspect[] as props. */
+   Client component: receives the already-fetched PublicSuspect[] as props and
+   does ALL filtering in-browser (pure Array.filter on that array). It never
+   re-queries the server or DB — the data boundary is owned by the Server
+   Component (page.tsx) that fetched these props. */
 
 const LABEL = "Oxanium, sans-serif";
 const MONO = "'IBM Plex Mono', monospace";
@@ -24,6 +27,10 @@ const SOURCED_COLOR = "#5fe6ff";
 function suspectName(s: PublicSuspect): string {
   const n = [s.first_name, s.last_name].filter(Boolean).join(" ").trim();
   return n || (s.title ?? "").trim() || "(unnamed record)";
+}
+
+function isArmed(s: PublicSuspect): boolean {
+  return /ARMED/i.test(s.warning_message ?? "");
 }
 
 function statusLabel(s: PublicSuspect): string {
@@ -66,6 +73,37 @@ function subjectsShort(s: PublicSuspect): string {
   return (s.subjects ?? []).filter(Boolean).join(" · ");
 }
 
+// ---- live ZULU clock (hydration proof) --------------------------------------
+
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+function ZuluClock() {
+  // null until mounted so server and client render the SAME placeholder (no
+  // hydration mismatch); the interval then drives a live UTC tick every second.
+  const [now, setNow] = useState<Date | null>(null);
+  useEffect(() => {
+    // Seed the live UTC time on mount (an external-system→state sync — the wall
+    // clock), then tick every second. Mount-time set avoids a 1s placeholder gap.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNow(new Date());
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const time = now
+    ? `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} ZULU`
+    : "--:--:-- ZULU";
+  const date = now ? `${pad2(now.getUTCDate())} ${MONTHS[now.getUTCMonth()]} ${now.getUTCFullYear()}` : "-- --- ----";
+
+  return (
+    <>
+      <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: "1px", color: "#9fdcef" }}>{time}</span>
+      <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "1px", color: "#5d7180" }}>{date}</span>
+    </>
+  );
+}
+
 function useScale() {
   const [scale, setScale] = useState(1);
   useEffect(() => {
@@ -77,17 +115,37 @@ function useScale() {
   return scale;
 }
 
+// ---- filter model -----------------------------------------------------------
+
+type Quick = "all" | "mapped" | "armed";
+type SourceFilter = "all" | "official" | "analytical";
+
 export default function CommandView({ suspects }: { suspects: PublicSuspect[] }) {
   const scale = useScale();
 
-  // ---- real aggregates (no fabricated networks) ----------------------------
+  // ---- client-side filter state (no server round-trip) ---------------------
+  const [quick, setQuick] = useState<Quick>("all");
+  const [category, setCategory] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState<string | null>(null);
+  const [source, setSource] = useState<SourceFilter>("all");
+
+  const anyActive = quick !== "all" || category !== null || stateFilter !== null || source !== "all";
+
+  const clearAll = () => {
+    setQuick("all");
+    setCategory(null);
+    setStateFilter(null);
+    setSource("all");
+  };
+
+  // ---- real aggregates over the FULL dataset (the rail is an overview) ------
   const total = suspects.length;
   // "mapped" must match what the basemap can actually plot, not just "has a state
   // code" — a real but unplottable code (e.g. PR) counts as UNMAPPED so the rail
   // never claims more placed records than the map draws.
   const mapped = suspects.filter((s) => isMappable(s.primary_state)).length;
   const unmapped = total - mapped;
-  const armed = suspects.filter((s) => (s.warning_message ?? "").match(/ARMED/i)).length;
+  const armed = suspects.filter(isArmed).length;
   const sourcedCount = suspects.filter((s) => s.data_class === "official").length;
   const analyticalCount = total - sourcedCount;
 
@@ -100,6 +158,34 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   });
   const categories = [...catCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
   const catMax = categories.reduce((m, [, n]) => Math.max(m, n), 1);
+
+  // ---- the pure client-side filtered view (drives BOTH list and map) -------
+  const visible = useMemo(
+    () =>
+      suspects.filter((s) => {
+        if (quick === "mapped" && !isMappable(s.primary_state)) return false;
+        if (quick === "armed" && !isArmed(s)) return false;
+        if (category && !(s.subjects ?? []).includes(category)) return false;
+        if (stateFilter && (s.primary_state ?? "").toUpperCase() !== stateFilter) return false;
+        if (source !== "all" && s.data_class !== source) return false;
+        return true;
+      }),
+    [suspects, quick, category, stateFilter, source],
+  );
+  const visSourced = visible.filter((s) => s.data_class === "official").length;
+  const visInferred = visible.length - visSourced;
+
+  const toggleQuick = (q: Quick) => setQuick((cur) => (cur === q ? "all" : q));
+  const toggleCategory = (c: string) => setCategory((cur) => (cur === c ? null : c));
+  const toggleSource = (sf: Exclude<SourceFilter, "all">) => setSource((cur) => (cur === sf ? "all" : sf));
+
+  // active-filter chips (each removable), so map-driven filters are visible too
+  const activeTags: { key: string; label: string; clear: () => void }[] = [];
+  if (quick !== "all") activeTags.push({ key: "quick", label: quick.toUpperCase(), clear: () => setQuick("all") });
+  if (category) activeTags.push({ key: "cat", label: category, clear: () => setCategory(null) });
+  if (stateFilter) activeTags.push({ key: "state", label: `STATE ${stateFilter}`, clear: () => setStateFilter(null) });
+  if (source !== "all")
+    activeTags.push({ key: "src", label: source === "official" ? "SOURCED" : "INFERRED", clear: () => setSource("all") });
 
   return (
     <div
@@ -134,9 +220,9 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
             boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
           }}
         >
-          {/* map (full-bleed) */}
+          {/* map (full-bleed) — reads the SAME filtered array as the list */}
           <div style={{ position: "absolute", left: 0, top: 54, right: 0, bottom: 0 }}>
-            <HomelandMap suspects={suspects} />
+            <HomelandMap suspects={visible} selectedState={stateFilter} onSelectState={setStateFilter} />
           </div>
 
           {/* top command bar */}
@@ -201,8 +287,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-              <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: "1px", color: "#9fdcef" }}>06:42:18 ZULU</span>
-              <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "1px", color: "#5d7180" }}>27 JUN 2026</span>
+              <ZuluClock />
               <span
                 style={{
                   fontFamily: MONO,
@@ -219,7 +304,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
             </div>
           </div>
 
-          {/* left rail: real aggregates of the official records */}
+          {/* left rail: real aggregates + filter controls */}
           <div
             style={{
               position: "absolute",
@@ -238,64 +323,87 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
               gap: 13,
             }}
           >
-            {/* WANTED CATEGORIES — aggregated from real subjects[] */}
+            {/* WANTED CATEGORIES — click a row to filter by that subject */}
             <div>
               <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 11 }}>
                 WANTED CATEGORIES
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {categories.length === 0 && (
                   <div style={{ fontFamily: MONO, fontSize: 9, color: "#5d7180" }}>no categories</div>
                 )}
-                {categories.map(([label, n]) => (
-                  <div key={label} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span
-                        style={{
-                          width: 11,
-                          height: 11,
-                          borderRadius: 3,
-                          background: SOURCED_COLOR,
-                          boxShadow: `0 0 8px ${SOURCED_COLOR}`,
-                          flex: "0 0 auto",
-                        }}
-                      />
-                      <span
-                        style={{
-                          fontFamily: LABEL,
-                          fontSize: 11,
-                          fontWeight: 600,
-                          letterSpacing: "0.5px",
-                          color: "#dce8ef",
-                          flex: 1,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {label}
-                      </span>
-                      <span style={{ fontFamily: MONO, fontSize: 9, color: "#7c93a1" }}>{n}</span>
-                    </div>
-                    <div style={{ height: 3, borderRadius: 2, background: "rgba(120,160,185,0.14)", overflow: "hidden" }}>
-                      <div
-                        style={{
-                          height: "100%",
-                          width: (n / catMax) * 100 + "%",
-                          borderRadius: 2,
-                          background: `linear-gradient(90deg,${hexA(SOURCED_COLOR, 0.4)},${SOURCED_COLOR})`,
-                          boxShadow: `0 0 6px ${hexA(SOURCED_COLOR, 0.55)}`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                {categories.map(([label, n]) => {
+                  const active = category === label;
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => toggleCategory(label)}
+                      title={`Filter: ${label}`}
+                      style={{
+                        ...btnReset,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 5,
+                        width: "100%",
+                        padding: "4px 6px",
+                        margin: "0 -6px",
+                        borderRadius: 5,
+                        background: active ? hexA(SOURCED_COLOR, 0.1) : "transparent",
+                        border: active ? `1px solid ${hexA(SOURCED_COLOR, 0.5)}` : "1px solid transparent",
+                        transition: "background .15s",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            width: 11,
+                            height: 11,
+                            borderRadius: 3,
+                            background: SOURCED_COLOR,
+                            boxShadow: `0 0 8px ${SOURCED_COLOR}`,
+                            flex: "0 0 auto",
+                            opacity: active || !category ? 1 : 0.4,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontFamily: LABEL,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.5px",
+                            color: active ? "#eef4f8" : "#dce8ef",
+                            flex: 1,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            textAlign: "left",
+                          }}
+                        >
+                          {label}
+                        </span>
+                        <span style={{ fontFamily: MONO, fontSize: 9, color: active ? SOURCED_COLOR : "#7c93a1" }}>{n}</span>
+                      </div>
+                      <div style={{ height: 3, borderRadius: 2, background: "rgba(120,160,185,0.14)", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: (n / catMax) * 100 + "%",
+                            borderRadius: 2,
+                            background: `linear-gradient(90deg,${hexA(SOURCED_COLOR, 0.4)},${SOURCED_COLOR})`,
+                            boxShadow: `0 0 6px ${hexA(SOURCED_COLOR, 0.55)}`,
+                          }}
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
 
-            {/* SITUATION — real counts */}
+            {/* SITUATION — real counts (overview of the full set) */}
             <div>
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 9 }}>
                 <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab" }}>
@@ -314,40 +422,46 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
 
             <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
 
-            {/* DATA INTEGRITY — the wall legend (all current records are SOURCED) */}
+            {/* DATA INTEGRITY — click a row to filter by data_class (the wall) */}
             <div>
               <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 10 }}>
                 DATA INTEGRITY
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                  <span
-                    style={{
-                      width: 15,
-                      height: 15,
-                      borderRadius: 3,
-                      background: "rgba(159,231,200,0.16)",
-                      border: "1.5px solid #9fe7c8",
-                      boxShadow: "0 0 7px rgba(159,231,200,0.35)",
-                      flex: "0 0 auto",
-                    }}
-                  />
-                  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.25, flex: 1 }}>
-                    <span style={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.8px", color: "#dce8ef" }}>SOURCED</span>
-                    <span style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "0.4px", color: "#7c93a1" }}>confirmed federal record</span>
-                  </div>
-                  <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600, color: "#9fe7c8" }}>{sourcedCount}</span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                  <span style={{ width: 15, height: 15, borderRadius: 3, background: "transparent", border: "1.5px dashed #f3c25a", flex: "0 0 auto" }} />
-                  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.25, flex: 1 }}>
-                    <span style={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, fontStyle: "italic", letterSpacing: "0.8px", color: "#dce8ef" }}>
-                      ANALYTICAL
-                    </span>
-                    <span style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "0.4px", color: "#7c93a1" }}>inference — walled off</span>
-                  </div>
-                  <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600, color: "#7c93a1" }}>{analyticalCount}</span>
-                </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <IntegrityRow
+                  active={source === "official"}
+                  onClick={() => toggleSource("official")}
+                  swatch={
+                    <span
+                      style={{
+                        width: 15,
+                        height: 15,
+                        borderRadius: 3,
+                        background: "rgba(159,231,200,0.16)",
+                        border: "1.5px solid #9fe7c8",
+                        boxShadow: "0 0 7px rgba(159,231,200,0.35)",
+                        flex: "0 0 auto",
+                      }}
+                    />
+                  }
+                  title="SOURCED"
+                  titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.8px", color: "#dce8ef" }}
+                  subtitle="confirmed federal record"
+                  count={sourcedCount}
+                  countColor="#9fe7c8"
+                  activeColor="#9fe7c8"
+                />
+                <IntegrityRow
+                  active={source === "analytical"}
+                  onClick={() => toggleSource("analytical")}
+                  swatch={<span style={{ width: 15, height: 15, borderRadius: 3, background: "transparent", border: "1.5px dashed #f3c25a", flex: "0 0 auto" }} />}
+                  title="ANALYTICAL"
+                  titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, fontStyle: "italic", letterSpacing: "0.8px", color: "#dce8ef" }}
+                  subtitle="inference — walled off"
+                  count={analyticalCount}
+                  countColor="#7c93a1"
+                  activeColor="#f3c25a"
+                />
               </div>
             </div>
           </div>
@@ -373,18 +487,58 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px 4px" }}>
               <span style={{ fontFamily: LABEL, fontSize: 13, fontWeight: 700, letterSpacing: "2.6px", color: "#eef4f8" }}>ACTIVE RECORDS</span>
-              <span style={{ fontFamily: MONO, fontSize: 10, color: "#06121a", background: SOURCED_COLOR, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>
-                {total}
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 10,
+                  color: "#06121a",
+                  background: anyActive ? "#f3c25a" : SOURCED_COLOR,
+                  padding: "2px 7px",
+                  borderRadius: 3,
+                  fontWeight: 600,
+                }}
+              >
+                {anyActive ? `${visible.length} / ${total}` : total}
               </span>
             </div>
             <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.5px", color: "#7c93a1", padding: "0 2px 9px" }}>
-              {sourcedCount} SOURCED · {analyticalCount} INFERRED
+              {visSourced} SOURCED · {visInferred} INFERRED
             </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 2px 11px" }}>
-              <Chip text={`ALL ${total}`} solid />
-              <Chip text={`MAPPED ${mapped}`} />
-              <Chip text={`ARMED ${armed}`} />
+
+            {/* quick filter chips */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 2px 8px" }}>
+              <FilterChip text={`ALL ${total}`} active={!anyActive} onClick={clearAll} />
+              <FilterChip text={`MAPPED ${mapped}`} active={quick === "mapped"} onClick={() => toggleQuick("mapped")} />
+              <FilterChip text={`ARMED ${armed}`} active={quick === "armed"} onClick={() => toggleQuick("armed")} />
             </div>
+
+            {/* active-filter tags (removable) — only when something is filtered */}
+            {anyActive && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "0 2px 9px" }}>
+                <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "1px", color: "#5d7180", flex: "0 0 auto" }}>FILTERS</span>
+                {activeTags.map((t) => (
+                  <button key={t.key} type="button" onClick={t.clear} title={`Remove ${t.label}`} style={{ ...btnReset, ...tagStyle }}>
+                    <span
+                      style={{
+                        maxWidth: 120,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        display: "inline-block",
+                        verticalAlign: "bottom",
+                      }}
+                    >
+                      {t.label}
+                    </span>
+                    <span style={{ color: "#f3c25a", fontWeight: 700 }}> ✕</span>
+                  </button>
+                ))}
+                <button key="clear" type="button" onClick={clearAll} title="Clear all filters" style={{ ...btnReset, ...clearStyle }}>
+                  CLEAR
+                </button>
+              </div>
+            )}
+
             <div
               style={{
                 flex: 1,
@@ -398,9 +552,29 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
                 maskImage: "linear-gradient(180deg,#000 96%,transparent)",
               }}
             >
-              {suspects.map((s) => (
-                <RecordCard key={s.id} s={s} />
-              ))}
+              {visible.length === 0 ? (
+                <div
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 10,
+                    letterSpacing: "1px",
+                    color: "#5d7180",
+                    textAlign: "center",
+                    padding: "26px 8px",
+                    border: "1px dashed rgba(120,180,210,0.25)",
+                    borderRadius: 7,
+                    marginTop: 4,
+                  }}
+                >
+                  NO RECORDS MATCH
+                  <br />
+                  <button type="button" onClick={clearAll} style={{ ...btnReset, ...clearStyle, marginTop: 10, display: "inline-block" }}>
+                    CLEAR FILTERS
+                  </button>
+                </div>
+              ) : (
+                visible.map((s) => <RecordCard key={s.id} s={s} />)
+              )}
             </div>
           </div>
 
@@ -432,7 +606,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
               <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#aebfc9" }}>STATE WITH RECORDS</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>{unmapped} UNMAPPED</span>
+              <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>CLICK A STATE TO FILTER · {unmapped} UNMAPPED</span>
             </div>
           </div>
         </div>
@@ -443,6 +617,40 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
 
 // ---- small presentational helpers -------------------------------------------
 
+const btnReset: CSSProperties = {
+  appearance: "none",
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  margin: 0,
+  font: "inherit",
+  color: "inherit",
+  cursor: "pointer",
+};
+
+const tagStyle: CSSProperties = {
+  fontFamily: MONO,
+  fontSize: 8,
+  letterSpacing: "0.6px",
+  color: "#dce8ef",
+  background: hexA(SOURCED_COLOR, 0.1),
+  border: `1px solid ${hexA(SOURCED_COLOR, 0.4)}`,
+  padding: "3px 7px",
+  borderRadius: 3,
+};
+
+const clearStyle: CSSProperties = {
+  fontFamily: MONO,
+  fontSize: 8,
+  letterSpacing: "1px",
+  fontWeight: 600,
+  color: "#ff9aa6",
+  background: "transparent",
+  border: "1px solid rgba(255,86,103,0.5)",
+  padding: "3px 8px",
+  borderRadius: 3,
+};
+
 function SituationRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -452,23 +660,76 @@ function SituationRow({ label, value, valueColor }: { label: string; value: stri
   );
 }
 
-function Chip({ text, solid }: { text: string; solid?: boolean }) {
+function FilterChip({ text, active, onClick }: { text: string; active: boolean; onClick: () => void }) {
   return (
-    <span
+    <button
+      type="button"
+      onClick={onClick}
       style={{
+        ...btnReset,
         fontFamily: MONO,
         fontSize: 8.5,
         letterSpacing: "1px",
-        fontWeight: solid ? 600 : 400,
-        color: solid ? "#06121a" : "#aebfc9",
-        background: solid ? "#9fb3c0" : "transparent",
-        border: solid ? "none" : "1px solid rgba(120,180,210,0.3)",
+        fontWeight: active ? 600 : 400,
+        color: active ? "#06121a" : "#aebfc9",
+        background: active ? SOURCED_COLOR : "transparent",
+        border: active ? "none" : "1px solid rgba(120,180,210,0.3)",
         padding: "3px 9px",
         borderRadius: 3,
       }}
     >
       {text}
-    </span>
+    </button>
+  );
+}
+
+function IntegrityRow({
+  active,
+  onClick,
+  swatch,
+  title,
+  titleStyle,
+  subtitle,
+  count,
+  countColor,
+  activeColor,
+}: {
+  active: boolean;
+  onClick: () => void;
+  swatch: React.ReactNode;
+  title: string;
+  titleStyle: CSSProperties;
+  subtitle: string;
+  count: number;
+  countColor: string;
+  activeColor: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Filter: ${title}`}
+      style={{
+        ...btnReset,
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        width: "100%",
+        padding: "4px 6px",
+        margin: "0 -6px",
+        borderRadius: 5,
+        background: active ? hexA(activeColor, 0.12) : "transparent",
+        border: active ? `1px solid ${hexA(activeColor, 0.5)}` : "1px solid transparent",
+        transition: "background .15s",
+      }}
+    >
+      {swatch}
+      <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.25, flex: 1, textAlign: "left" }}>
+        <span style={titleStyle}>{title}</span>
+        <span style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "0.4px", color: "#7c93a1" }}>{subtitle}</span>
+      </div>
+      <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600, color: countColor }}>{count}</span>
+    </button>
   );
 }
 
