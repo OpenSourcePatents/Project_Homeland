@@ -1,11 +1,18 @@
 "use client";
 
 import { CSSProperties, useEffect, useRef, useState } from "react";
-import { HOMELAND, hexA } from "@/lib/homeland-data";
+import { hexA } from "@/lib/color";
+import type { PublicSuspect } from "@/lib/public-suspect";
 
-/* Loads robflaherty/us-map-raphael path data onto window.usMap, measures each
-   state's bounding-box center, then overlays markers, convergence zones,
-   association lines and labels. Ported from the HomelandMap.dc.html design. */
+/* US tactical map. Loads robflaherty/us-map-raphael path data onto window.usMap,
+   measures each state's bbox center, then overlays:
+     - a uniform "official" tint on states that hold ≥1 record
+     - one marker per state-resolved suspect (single 'sourced' treatment)
+     - convergence association lines + zones — PRODUCT A, no data yet, so they
+       come in as empty arrays and render NOTHING (guarded, never crash).
+
+   Client component: receives plain serializable PublicSuspect[] as props. It does
+   NOT import the db client. */
 
 declare global {
   interface Window {
@@ -15,65 +22,133 @@ declare global {
 
 const US_MAP_SRC = "https://cdn.jsdelivr.net/gh/robflaherty/us-map-raphael/us-map-svg.js";
 
+// Single default treatment for official/sourced records (no per-network color —
+// that is Product A, which has no data yet).
+const SOURCED_COLOR = "#5fe6ff";
+
 type Variant = "sentinel" | "watchfloor";
 type Centers = Record<string, { x: number; y: number }>;
 
+/** Convergence association between two state centers (Product A — empty for now). */
+export interface ConvergenceLink {
+  fromState: string;
+  toState: string;
+}
+
+/** Convergence zone spanning several states (Product A — empty for now). */
+export interface ConvergenceZone {
+  cells: string[];
+  label: string;
+  pct: number;
+  colorA: string;
+  colorB: string;
+}
+
 export interface HomelandMapProps {
+  suspects: PublicSuspect[];
+  /** Product-A convergence layers. Default empty -> render nothing. */
+  links?: ConvergenceLink[];
+  zones?: ConvergenceZone[];
   variant?: Variant;
   showZones?: boolean;
   showConnectors?: boolean;
   scanline?: boolean;
 }
 
-function useUsMap(): boolean {
-  const [ready, setReady] = useState(false);
+type MapStatus = "loading" | "ready" | "failed";
+
+// Stop polling after this many 40ms ticks (~6s) so a CDN/CSP/offline failure
+// degrades to a visible "basemap unavailable" state instead of spinning forever.
+const MAX_POLL_TICKS = 150;
+
+function useUsMap(): MapStatus {
+  // Deterministic initial state (SSR-safe): always "loading" on first render so
+  // server and client hydrate identically; the effect promotes it to ready/failed.
+  const [status, setStatus] = useState<MapStatus>("loading");
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.usMap) {
-      setReady(true);
+      // Sync a pre-existing third-party global (e.g. cached across navigations)
+      // into React state. This is an external-system sync, not derived state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStatus("ready");
       return;
     }
     let cancelled = false;
+    let ticks = 0;
     let timer: ReturnType<typeof setInterval> | null = null;
-    const existing = document.querySelector<HTMLScriptElement>(`script[data-usmap]`);
-    const poll = () => {
-      timer = setInterval(() => {
-        if (window.usMap) {
-          if (timer) clearInterval(timer);
-          timer = null;
-          if (!cancelled) setReady(true);
-        }
-      }, 40);
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
     };
+    const existing = document.querySelector<HTMLScriptElement>(`script[data-usmap]`);
     if (!existing) {
       const s = document.createElement("script");
       s.src = US_MAP_SRC;
       s.async = true;
       s.dataset.usmap = "1";
+      s.onerror = () => {
+        if (!cancelled) {
+          stop();
+          setStatus("failed");
+        }
+      };
       document.head.appendChild(s);
     }
-    poll();
+    timer = setInterval(() => {
+      if (window.usMap) {
+        stop();
+        if (!cancelled) setStatus("ready");
+      } else if (++ticks >= MAX_POLL_TICKS) {
+        stop();
+        if (!cancelled) setStatus("failed");
+      }
+    }, 40);
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      stop();
     };
   }, []);
-  return ready;
+  return status;
+}
+
+function codeStyle(col: string, size = 8): CSSProperties {
+  return {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: `${size}px`,
+    fontWeight: 600,
+    letterSpacing: "0.3px",
+    fill: col,
+    paintOrder: "stroke",
+    stroke: "rgba(6,10,14,0.95)",
+    strokeWidth: "2px",
+  };
 }
 
 export default function HomelandMap({
+  suspects,
+  links = [],
+  zones = [],
   variant = "sentinel",
   showZones = true,
   showConnectors = true,
   scanline = true,
 }: HomelandMapProps) {
-  const usMapReady = useUsMap();
+  const mapStatus = useUsMap();
   const svgRef = useRef<SVGSVGElement>(null);
   const [centers, setCenters] = useState<Centers | null>(null);
 
-  const H = HOMELAND;
-  const U = usMapReady && typeof window !== "undefined" ? window.usMap : undefined;
+  const U = mapStatus === "ready" && typeof window !== "undefined" ? window.usMap : undefined;
   const watch = variant === "watchfloor";
+
+  // group state-resolved suspects by lowercased state code (usMap keys are lowercase)
+  const byState: Record<string, PublicSuspect[]> = {};
+  suspects.forEach((s) => {
+    if (!s.primary_state) return; // null-state records stay in the list, off the map
+    const code = s.primary_state.toLowerCase();
+    (byState[code] ||= []).push(s);
+  });
+  const occupied = new Set(Object.keys(byState));
 
   // measure state path centers once the SVG paths are in the DOM
   useEffect(() => {
@@ -89,6 +164,9 @@ export default function HomelandMap({
         /* getBBox can throw if not yet laid out */
       }
     });
+    // Storing geometry read from the laid-out DOM (getBBox) — a genuine
+    // external-system→state sync that can only happen after paint.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (Object.keys(measured).length) setCenters(measured);
   }, [U, centers]);
 
@@ -120,23 +198,17 @@ export default function HomelandMap({
   };
   const baseGlow: CSSProperties = { filter: "drop-shadow(0 0 2px rgba(95,230,255,0.55))" };
 
-  const gradients = H.networks.map((n) => ({
-    id: "grad-" + n.id,
-    c0: hexA(n.color, 0.55),
-    c1: hexA(n.color, 0.22),
-    c2: hexA(n.color, 0),
+  // per-zone radial gradients (empty while there are no zones)
+  const gradients = zones.map((z, i) => ({
+    id: "grad-z" + i,
+    c0: hexA(z.colorA, 0.5),
+    c1: hexA(z.colorB, 0.22),
+    c2: hexA(z.colorB, 0),
   }));
 
-  // state polygons, tinted by the network occupying that state
-  const byState: Record<string, (typeof H.actors)[number]> = {};
-  H.actors.forEach((a) => {
-    byState[a.state.toLowerCase()] = a;
-  });
-
+  // state polygons: default base, or a SINGLE uniform official tint where records exist.
   const statePaths = U
     ? Object.keys(U).map((code) => {
-        const a = byState[code];
-        const net = a ? H.netById(a.nets[0]) : null;
         const st: CSSProperties = {
           fill: "rgba(16,28,40,0.5)",
           stroke: `rgba(95,230,255,${watch ? 0.5 : 0.4})`,
@@ -144,24 +216,29 @@ export default function HomelandMap({
           strokeLinejoin: "round",
           transition: "fill .3s",
         };
-        if (net) {
-          st.fill = hexA(net.color, 0.2);
-          st.stroke = hexA(net.color, 0.92);
+        if (occupied.has(code)) {
+          st.fill = hexA(SOURCED_COLOR, 0.12);
+          st.stroke = hexA(SOURCED_COLOR, 0.8);
           st.strokeWidth = "1.1";
-          st.filter = `drop-shadow(0 0 3px ${hexA(net.color, 0.85)})`;
-          if (a && a.source === "analytical") {
-            st.fill = "rgba(16,28,40,0.42)";
-            st.strokeDasharray = "4 3";
-            st.strokeWidth = "1";
-            st.filter = `drop-shadow(0 0 2px ${hexA(net.color, 0.55)})`;
-          }
+          st.filter = `drop-shadow(0 0 3px ${hexA(SOURCED_COLOR, 0.7)})`;
         }
         return { code, d: U[code], style: st };
       })
     : [];
 
   // markers / lines / zones / labels only after centers are measured
-  let markers: ReturnType<typeof buildMarkers> = [];
+  type Marker = {
+    id: string;
+    cx: number;
+    cy: number;
+    sourced: boolean;
+    ringStyle: CSSProperties;
+    dotFill: string;
+    dotStroke: string;
+    dash: string;
+    dotStyle: CSSProperties;
+  };
+  let markers: Marker[] = [];
   let lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
   const zoneBlobs: { cx: number; cy: number; r: number; fill: string; style: CSSProperties }[] = [];
   const zoneOutlines: { cx: number; cy: number; r: number }[] = [];
@@ -169,27 +246,67 @@ export default function HomelandMap({
   let labelEls: React.ReactNode[] = [];
 
   if (centers) {
-    markers = buildMarkers(centers);
+    // one marker per state-resolved suspect; jitter when several share a state
+    const built: Marker[] = [];
+    Object.entries(byState).forEach(([code, group]) => {
+      const ctr = centers[code];
+      if (!ctr) return;
+      const n = group.length;
+      // spread co-located markers on a ring; widen it a touch with the count so a
+      // busy state's dots stay distinguishable (capped so they don't fly off-state).
+      const rad = Math.min(6 + n, 13);
+      group.forEach((s, i) => {
+        let cx = ctr.x;
+        let cy = ctr.y;
+        if (n > 1) {
+          const ang = (i / n) * Math.PI * 2;
+          cx += Math.cos(ang) * rad;
+          cy += Math.sin(ang) * rad;
+        }
+        // data_class is always 'official' here, but keep the branch for later.
+        const sourced = s.data_class === "official";
+        built.push({
+          id: s.id,
+          cx,
+          cy,
+          sourced,
+          ringStyle: {
+            transformBox: "fill-box",
+            transformOrigin: "center",
+            animation: "hl-pulse 2.8s ease-out infinite",
+          },
+          dotFill: sourced ? SOURCED_COLOR : "rgba(8,12,16,0.75)",
+          dotStroke: sourced ? "#ffffff" : SOURCED_COLOR,
+          dash: sourced ? "none" : "1.6 1.6",
+          dotStyle: {
+            filter: sourced
+              ? `drop-shadow(0 0 3px ${SOURCED_COLOR})`
+              : `drop-shadow(0 0 2px ${hexA(SOURCED_COLOR, 0.7)})`,
+          },
+        });
+      });
+    });
+    markers = built;
 
+    // convergence association lines — empty array now -> renders nothing
     if (showConnectors) {
-      lines = H.links
-        .map((p) => {
-          const a = centers[H.actorById(p[0]).state.toLowerCase()];
-          const b = centers[H.actorById(p[1]).state.toLowerCase()];
+      lines = links
+        .map((l) => {
+          const a = centers[l.fromState.toLowerCase()];
+          const b = centers[l.toState.toLowerCase()];
           if (!a || !b) return null;
           return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
         })
         .filter((l): l is NonNullable<typeof l> => Boolean(l));
     }
 
+    // convergence zones — empty array now -> renders nothing
     const zoneLabelData: {
       cx: number; cy: number; rad: number;
-      aName: string; bName: string; aColor: string; bColor: string;
-      name: string; pct: number;
+      label: string; pct: number; colorA: string; colorB: string;
     }[] = [];
-
     if (showZones) {
-      H.zones.forEach((z) => {
+      zones.forEach((z, zi) => {
         const cs = z.cells.map((cd) => centers[cd.toLowerCase()]).filter(Boolean);
         if (cs.length < 2) return;
         const cx = cs.reduce((s, p) => s + p.x, 0) / cs.length;
@@ -199,94 +316,30 @@ export default function HomelandMap({
           rad = Math.max(rad, Math.hypot(p.x - cx, p.y - cy));
         });
         rad += 34;
-        z.nets.forEach((nid, i) => {
-          const off = (i === 0 ? -1 : 1) * 10;
-          zoneBlobs.push({
-            cx: cx + off,
-            cy,
-            r: rad,
-            fill: `url(#grad-${nid})`,
-            style: {
-              mixBlendMode: "screen",
-              filter: "blur(3px)",
-              animation: `hl-zone ${5 + i}s ease-in-out infinite`,
-            },
-          });
+        zoneBlobs.push({
+          cx,
+          cy,
+          r: rad,
+          fill: `url(#grad-z${zi})`,
+          style: { mixBlendMode: "screen", filter: "blur(3px)", animation: `hl-zone 5s ease-in-out infinite` },
         });
         zoneOutlines.push({ cx, cy, r: rad });
-        const na = H.netById(z.nets[0]);
-        const nb = H.netById(z.nets[1]);
-        zoneLabelData.push({
-          cx, cy, rad,
-          aName: na.short, bName: nb.short, aColor: na.color, bColor: nb.color,
-          name: z.label, pct: Math.round(z.index * 100),
-        });
+        zoneLabelData.push({ cx, cy, rad, label: z.label, pct: z.pct, colorA: z.colorA, colorB: z.colorB });
       });
     }
 
-    // labels as real SVG <text>
-    const built = buildLabels(centers, byState, zoneLabelData);
-    leaderLines = built.leaders;
-    labelEls = built.els;
-  }
-
-  function codeStyle(col: string, size = 8): CSSProperties {
-    return {
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: `${size}px`,
-      fontWeight: 600,
-      letterSpacing: "0.3px",
-      fill: col,
-      paintOrder: "stroke",
-      stroke: "rgba(6,10,14,0.95)",
-      strokeWidth: "2px",
-    };
-  }
-
-  function buildMarkers(c: Centers) {
-    return H.actors
-      .map((a) => {
-        const ctr = c[a.state.toLowerCase()];
-        if (!ctr) return null;
-        const net = H.netById(a.nets[0]);
-        const sourced = a.source === "sourced";
-        const dual = a.nets.length > 1;
-        const m = {
-          id: a.id,
-          cx: ctr.x,
-          cy: ctr.y,
-          color: net.color,
-          sourced,
-          analytical: !sourced,
-          dual,
-          color2: dual ? H.netById(a.nets[1]).color : null,
-          ringStyle: {
-            transformBox: "fill-box",
-            transformOrigin: "center",
-            animation: "hl-pulse 2.8s ease-out infinite",
-          } as CSSProperties,
-          r: sourced ? 3.4 : 3.2,
-          dotFill: sourced ? net.color : "rgba(8,12,16,0.75)",
-          dotStroke: sourced ? "#ffffff" : net.color,
-          dash: sourced ? "none" : "1.6 1.6",
-          dotStyle: {
-            filter: sourced
-              ? `drop-shadow(0 0 3px ${net.color})`
-              : `drop-shadow(0 0 2px ${hexA(net.color, 0.7)})`,
-          } as CSSProperties,
-        };
-        return m;
-      })
-      .filter((m): m is NonNullable<typeof m> => Boolean(m));
+    // labels as real SVG <text>: state codes (geometry, not network data) + any zone labels
+    const built2 = buildLabels(centers, occupied, zoneLabelData);
+    leaderLines = built2.leaders;
+    labelEls = built2.els;
   }
 
   function buildLabels(
     c: Centers,
-    byStateMap: typeof byState,
+    occupiedCodes: Set<string>,
     zoneLabelData: {
       cx: number; cy: number; rad: number;
-      aName: string; bName: string; aColor: string; bColor: string;
-      name: string; pct: number;
+      label: string; pct: number; colorA: string; colorB: string;
     }[],
   ) {
     const smallSet: Record<string, number> = { vt: 1, nh: 1, ma: 1, ri: 1, ct: 1, nj: 1, de: 1, md: 1 };
@@ -296,15 +349,14 @@ export default function HomelandMap({
 
     Object.keys(c).forEach((code) => {
       const ctr = c[code];
-      const a = byStateMap[code];
-      const net = a ? H.netById(a.nets[0]) : null;
-      const col = net ? net.color : "rgba(165,210,232,0.66)";
+      const has = occupiedCodes.has(code);
+      const col = has ? SOURCED_COLOR : "rgba(165,210,232,0.66)";
       if (smallSet[code]) {
         smallArr.push({ code, c: ctr, color: col });
         return;
       }
       els.push(
-        <text key={"b_" + code} x={ctr.x} y={ctr.y + (a ? 7.6 : 2.6)} textAnchor="middle" style={codeStyle(col, 8)}>
+        <text key={"b_" + code} x={ctr.x} y={ctr.y + (has ? 7.6 : 2.6)} textAnchor="middle" style={codeStyle(col, 8)}>
           {code.toUpperCase()}
         </text>,
       );
@@ -328,27 +380,6 @@ export default function HomelandMap({
       const py = Math.max(12, z.cy - z.rad - 7);
       els.push(
         <text
-          key={"zp" + zi}
-          x={z.cx}
-          y={py}
-          textAnchor="middle"
-          style={{
-            fontFamily: "'Oxanium', sans-serif",
-            fontSize: "10.5px",
-            fontWeight: 700,
-            letterSpacing: "0.4px",
-            paintOrder: "stroke",
-            stroke: "rgba(6,10,14,0.96)",
-            strokeWidth: "2.8px",
-          }}
-        >
-          <tspan style={{ fill: z.aColor }}>{z.aName}</tspan>
-          <tspan style={{ fill: "#d4e3ec" }}>{"  ×  "}</tspan>
-          <tspan style={{ fill: z.bColor }}>{z.bName}</tspan>
-        </text>,
-      );
-      els.push(
-        <text
           key={"zn" + zi}
           x={z.cx}
           y={py + 11}
@@ -364,7 +395,7 @@ export default function HomelandMap({
             strokeWidth: "1.8px",
           }}
         >
-          {z.name + "  ·  " + z.pct + "% CONVERGENCE"}
+          {z.label + "  ·  " + z.pct + "% CONVERGENCE"}
         </text>,
       );
     });
@@ -425,19 +456,16 @@ export default function HomelandMap({
         <g>
           {markers.map((m) => (
             <g key={m.id}>
-              {m.dual && m.color2 && (
-                <circle cx={m.cx} cy={m.cy} r={8} fill="none" stroke={m.color2} strokeWidth="0.8" opacity="0.65" />
-              )}
               {m.sourced && (
-                <circle cx={m.cx} cy={m.cy} r={5} fill="none" stroke={m.color} strokeWidth="0.9" style={m.ringStyle} />
+                <circle cx={m.cx} cy={m.cy} r={5} fill="none" stroke={SOURCED_COLOR} strokeWidth="0.9" style={m.ringStyle} />
               )}
-              {m.analytical && (
-                <circle cx={m.cx} cy={m.cy} r={5.5} fill="none" stroke={m.color} strokeWidth="0.7" strokeDasharray="2 2" opacity="0.5" />
+              {!m.sourced && (
+                <circle cx={m.cx} cy={m.cy} r={5.5} fill="none" stroke={SOURCED_COLOR} strokeWidth="0.7" strokeDasharray="2 2" opacity="0.5" />
               )}
               <circle
                 cx={m.cx}
                 cy={m.cy}
-                r={m.r}
+                r={m.sourced ? 3.4 : 3.2}
                 fill={m.dotFill}
                 stroke={m.dotStroke}
                 strokeWidth="0.8"
@@ -465,6 +493,34 @@ export default function HomelandMap({
           </linearGradient>
         </defs>
       </svg>
+
+      {mapStatus === "failed" && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 11,
+              letterSpacing: "2px",
+              color: "#7c93a1",
+              border: "1px solid rgba(120,180,210,0.25)",
+              borderRadius: 5,
+              padding: "8px 14px",
+              background: "rgba(9,13,19,0.7)",
+            }}
+          >
+            ◬ BASEMAP UNAVAILABLE
+          </span>
+        </div>
+      )}
     </div>
   );
 }
