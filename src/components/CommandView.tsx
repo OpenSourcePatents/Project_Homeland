@@ -1,26 +1,28 @@
 "use client";
 
-import { CSSProperties, useEffect, useMemo, useState } from "react";
+import { CSSProperties, useEffect, useRef, useState } from "react";
 import HomelandMap from "@/components/HomelandMap";
 import type { PublicSuspect } from "@/lib/public-suspect";
 import { hexA } from "@/lib/color";
 import { isMappable } from "@/lib/us-states";
 
-/* DIRECTION A · SENTINEL — cinematic floating-glass command, wired to REAL
-   suspect_profiles data (Product B). All records are official/sourced. The
-   Product-A convergence layer (networks, links, zones) has no data yet, so:
-     - the map's convergence layers receive empty arrays (render nothing)
-     - the left rail shows REAL aggregates of the official records instead of
-       fabricated threat-network rosters.
+/* DIRECTION A · SENTINEL — responsive tactical command shell, wired to REAL
+   suspect_profiles data (Product B). All records are official/sourced.
 
-   Client component: receives the already-fetched PublicSuspect[] as props and
-   does ALL filtering in-browser (pure Array.filter on that array). It never
-   re-queries the server or DB — the data boundary is owned by the Server
-   Component (page.tsx) that fetched these props. */
+   This is the interactive client shell: it receives the already-fetched
+   PublicSuspect[] as props (the Server Component page.tsx owns the DB query and
+   the wall) and does ALL filtering in-browser. Layout is fully responsive
+   (flex/grid + viewport units + one stack breakpoint); the side panels are
+   draggable "sticky notes" with per-panel opacity. Drag/opacity are session-only
+   (no persistence); drag offsets reset on window resize so drag never fights the
+   responsive layout. */
 
 const LABEL = "Oxanium, sans-serif";
 const MONO = "'IBM Plex Mono', monospace";
 const SOURCED_COLOR = "#5fe6ff";
+
+// Below this viewport width the three columns stack vertically (tablet/phone).
+const STACK_BREAKPOINT = 820;
 
 // ---- record-level helpers (operate on real fields) --------------------------
 
@@ -79,12 +81,9 @@ const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function ZuluClock() {
-  // null until mounted so server and client render the SAME placeholder (no
-  // hydration mismatch); the interval then drives a live UTC tick every second.
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    // Seed the live UTC time on mount (an external-system→state sync — the wall
-    // clock), then tick every second. Mount-time set avoids a 1s placeholder gap.
+    // Seed the live UTC time on mount, then tick every second.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -104,15 +103,19 @@ function ZuluClock() {
   );
 }
 
-function useScale() {
-  const [scale, setScale] = useState(1);
+// ---- viewport hook (responsive breakpoint + resize signal) ------------------
+
+function useViewport() {
+  // Deterministic SSR/first-render value (wide) so hydration matches; the effect
+  // then sets the real size post-mount.
+  const [vp, setVp] = useState({ width: 1280, height: 800 });
   useEffect(() => {
-    const fit = () => setScale(Math.min(window.innerWidth / 1440, window.innerHeight / 900));
-    fit();
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    const on = () => setVp({ width: window.innerWidth, height: window.innerHeight });
+    on();
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
   }, []);
-  return scale;
+  return vp;
 }
 
 // ---- filter model -----------------------------------------------------------
@@ -121,7 +124,10 @@ type Quick = "all" | "mapped" | "armed";
 type SourceFilter = "all" | "official" | "analytical";
 
 export default function CommandView({ suspects }: { suspects: PublicSuspect[] }) {
-  const scale = useScale();
+  const vp = useViewport();
+  const wide = vp.width >= STACK_BREAKPOINT;
+  // changes on any resize -> draggable panels reset to their docked positions
+  const resetSignal = `${vp.width}x${vp.height}`;
 
   // ---- client-side filter state (no server round-trip) ---------------------
   const [quick, setQuick] = useState<Quick>("all");
@@ -140,9 +146,6 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
 
   // ---- real aggregates over the FULL dataset (the rail is an overview) ------
   const total = suspects.length;
-  // "mapped" must match what the basemap can actually plot, not just "has a state
-  // code" — a real but unplottable code (e.g. PR) counts as UNMAPPED so the rail
-  // never claims more placed records than the map draws.
   const mapped = suspects.filter((s) => isMappable(s.primary_state)).length;
   const unmapped = total - mapped;
   const armed = suspects.filter(isArmed).length;
@@ -160,18 +163,16 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   const catMax = categories.reduce((m, [, n]) => Math.max(m, n), 1);
 
   // ---- the pure client-side filtered view (drives BOTH list and map) -------
-  const visible = useMemo(
-    () =>
-      suspects.filter((s) => {
-        if (quick === "mapped" && !isMappable(s.primary_state)) return false;
-        if (quick === "armed" && !isArmed(s)) return false;
-        if (category && !(s.subjects ?? []).includes(category)) return false;
-        if (stateFilter && (s.primary_state ?? "").toUpperCase() !== stateFilter) return false;
-        if (source !== "all" && s.data_class !== source) return false;
-        return true;
-      }),
-    [suspects, quick, category, stateFilter, source],
-  );
+  // No manual useMemo: React Compiler (Next 16) memoizes this automatically, and
+  // filtering 20 rows is trivial. The SAME array feeds the list and the map.
+  const visible = suspects.filter((s) => {
+    if (quick === "mapped" && !isMappable(s.primary_state)) return false;
+    if (quick === "armed" && !isArmed(s)) return false;
+    if (category && !(s.subjects ?? []).includes(category)) return false;
+    if (stateFilter && (s.primary_state ?? "").toUpperCase() !== stateFilter) return false;
+    if (source !== "all" && s.data_class !== source) return false;
+    return true;
+  });
   const visSourced = visible.filter((s) => s.data_class === "official").length;
   const visInferred = visible.length - visSourced;
 
@@ -179,7 +180,6 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   const toggleCategory = (c: string) => setCategory((cur) => (cur === c ? null : c));
   const toggleSource = (sf: Exclude<SourceFilter, "all">) => setSource((cur) => (cur === sf ? "all" : sf));
 
-  // active-filter chips (each removable), so map-driven filters are visible too
   const activeTags: { key: string; label: string; clear: () => void }[] = [];
   if (quick !== "all") activeTags.push({ key: "quick", label: quick.toUpperCase(), clear: () => setQuick("all") });
   if (category) activeTags.push({ key: "cat", label: category, clear: () => setCategory(null) });
@@ -187,413 +187,343 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   if (source !== "all")
     activeTags.push({ key: "src", label: source === "official" ? "SOURCED" : "INFERRED", clear: () => setSource("all") });
 
+  // ---- left panel content (filters / intel) --------------------------------
+  const leftBody = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 13, padding: "12px 14px 14px", overflowY: "auto", flex: 1, minHeight: 0 }}>
+      {/* WANTED CATEGORIES — click a row to filter by that subject */}
+      <div>
+        <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 11 }}>
+          WANTED CATEGORIES
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {categories.length === 0 && <div style={{ fontFamily: MONO, fontSize: 9, color: "#5d7180" }}>no categories</div>}
+          {categories.map(([label, n]) => {
+            const active = category === label;
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={() => toggleCategory(label)}
+                title={`Filter: ${label}`}
+                style={{
+                  ...btnReset,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 5,
+                  width: "100%",
+                  padding: "4px 6px",
+                  margin: "0 -6px",
+                  borderRadius: 5,
+                  background: active ? hexA(SOURCED_COLOR, 0.1) : "transparent",
+                  border: active ? `1px solid ${hexA(SOURCED_COLOR, 0.5)}` : "1px solid transparent",
+                  transition: "background .15s",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span
+                    style={{
+                      width: 11,
+                      height: 11,
+                      borderRadius: 3,
+                      background: SOURCED_COLOR,
+                      boxShadow: `0 0 8px ${SOURCED_COLOR}`,
+                      flex: "0 0 auto",
+                      opacity: active || !category ? 1 : 0.4,
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: LABEL,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      letterSpacing: "0.5px",
+                      color: active ? "#eef4f8" : "#dce8ef",
+                      flex: 1,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      textAlign: "left",
+                    }}
+                  >
+                    {label}
+                  </span>
+                  <span style={{ fontFamily: MONO, fontSize: 9, color: active ? SOURCED_COLOR : "#7c93a1" }}>{n}</span>
+                </div>
+                <div style={{ height: 3, borderRadius: 2, background: "rgba(120,160,185,0.14)", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      width: (n / catMax) * 100 + "%",
+                      borderRadius: 2,
+                      background: `linear-gradient(90deg,${hexA(SOURCED_COLOR, 0.4)},${SOURCED_COLOR})`,
+                      boxShadow: `0 0 6px ${hexA(SOURCED_COLOR, 0.55)}`,
+                    }}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
+
+      {/* SITUATION — real counts (overview of the full set) */}
+      <div>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 9 }}>
+          <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab" }}>SITUATION</span>
+          <span style={{ fontFamily: LABEL, fontSize: 20, fontWeight: 800, color: SOURCED_COLOR, lineHeight: 1, textShadow: "0 0 12px rgba(95,230,255,0.5)" }}>
+            {total}
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          <SituationRow label="MAPPED / TOTAL" value={`${mapped} / ${total}`} />
+          <SituationRow label="UNMAPPED" value={String(unmapped)} />
+          <SituationRow label="ARMED & DANGEROUS" value={String(armed)} valueColor="#ff5667" />
+        </div>
+      </div>
+
+      <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
+
+      {/* DATA INTEGRITY — click a row to filter by data_class (the wall) */}
+      <div>
+        <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 10 }}>
+          DATA INTEGRITY
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <IntegrityRow
+            active={source === "official"}
+            onClick={() => toggleSource("official")}
+            swatch={
+              <span
+                style={{
+                  width: 15,
+                  height: 15,
+                  borderRadius: 3,
+                  background: "rgba(159,231,200,0.16)",
+                  border: "1.5px solid #9fe7c8",
+                  boxShadow: "0 0 7px rgba(159,231,200,0.35)",
+                  flex: "0 0 auto",
+                }}
+              />
+            }
+            title="SOURCED"
+            titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.8px", color: "#dce8ef" }}
+            subtitle="confirmed federal record"
+            count={sourcedCount}
+            countColor="#9fe7c8"
+            activeColor="#9fe7c8"
+          />
+          <IntegrityRow
+            active={source === "analytical"}
+            onClick={() => toggleSource("analytical")}
+            swatch={<span style={{ width: 15, height: 15, borderRadius: 3, background: "transparent", border: "1.5px dashed #f3c25a", flex: "0 0 auto" }} />}
+            title="ANALYTICAL"
+            titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, fontStyle: "italic", letterSpacing: "0.8px", color: "#dce8ef" }}
+            subtitle="inference — walled off"
+            count={analyticalCount}
+            countColor="#7c93a1"
+            activeColor="#f3c25a"
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  // ---- right panel content (records feed) ----------------------------------
+  const rightBody = (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, padding: "10px 12px 6px" }}>
+      <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.5px", color: "#7c93a1", padding: "0 2px 9px" }}>
+        {visSourced} SOURCED · {visInferred} INFERRED
+      </div>
+
+      {/* quick filter chips */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 2px 8px" }}>
+        <FilterChip text={`ALL ${total}`} active={!anyActive} onClick={clearAll} />
+        <FilterChip text={`MAPPED ${mapped}`} active={quick === "mapped"} onClick={() => toggleQuick("mapped")} />
+        <FilterChip text={`ARMED ${armed}`} active={quick === "armed"} onClick={() => toggleQuick("armed")} />
+      </div>
+
+      {/* active-filter tags (removable) */}
+      {anyActive && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "0 2px 9px" }}>
+          <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "1px", color: "#5d7180", flex: "0 0 auto" }}>FILTERS</span>
+          {activeTags.map((t) => (
+            <button key={t.key} type="button" onClick={t.clear} title={`Remove ${t.label}`} style={{ ...btnReset, ...tagStyle }}>
+              <span style={{ maxWidth: 120, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "inline-block", verticalAlign: "bottom" }}>
+                {t.label}
+              </span>
+              <span style={{ color: "#f3c25a", fontWeight: 700 }}> ✕</span>
+            </button>
+          ))}
+          <button key="clear" type="button" onClick={clearAll} title="Clear all filters" style={{ ...btnReset, ...clearStyle }}>
+            CLEAR
+          </button>
+        </div>
+      )}
+
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          overflowX: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          gap: 7,
+          padding: "0 2px",
+          WebkitMaskImage: "linear-gradient(180deg,#000 96%,transparent)",
+          maskImage: "linear-gradient(180deg,#000 96%,transparent)",
+        }}
+      >
+        {visible.length === 0 ? (
+          <div
+            style={{
+              fontFamily: MONO,
+              fontSize: 10,
+              letterSpacing: "1px",
+              color: "#5d7180",
+              textAlign: "center",
+              padding: "26px 8px",
+              border: "1px dashed rgba(120,180,210,0.25)",
+              borderRadius: 7,
+              marginTop: 4,
+            }}
+          >
+            NO RECORDS MATCH
+            <br />
+            <button type="button" onClick={clearAll} style={{ ...btnReset, ...clearStyle, marginTop: 10, display: "inline-block" }}>
+              CLEAR FILTERS
+            </button>
+          </div>
+        ) : (
+          visible.map((s) => <RecordCard key={s.id} s={s} />)
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div
       style={{
         position: "fixed",
         inset: 0,
         background: "#04060a",
+        color: "#eef4f8",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+        flexDirection: "column",
         overflow: "hidden",
       }}
     >
+      {/* ---- top command bar (logo removed) ---- */}
       <div
         style={{
-          width: 1440,
-          height: 900,
-          transform: `scale(${scale})`,
-          transformOrigin: "center center",
           flex: "0 0 auto",
+          zIndex: 50,
+          minHeight: 54,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "8px 20px",
+          padding: "8px 20px",
+          background: "linear-gradient(180deg, rgba(9,12,17,0.95), rgba(9,12,17,0.45))",
+          backdropFilter: "blur(9px)",
+          WebkitBackdropFilter: "blur(9px)",
+          borderBottom: "1px solid rgba(243,194,90,0.22)",
         }}
       >
-        <div
-          style={{
-            position: "relative",
-            width: 1440,
-            height: 900,
-            overflow: "hidden",
-            borderRadius: 6,
-            background: "#07090d",
-            border: "1px solid rgba(120,180,210,0.16)",
-            boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
-          }}
-        >
-          {/* map (full-bleed) — reads the SAME filtered array as the list */}
-          <div style={{ position: "absolute", left: 0, top: 54, right: 0, bottom: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+          <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: 15, letterSpacing: "3.5px", color: "#eef4f8" }}>PROJECT HOMELAND</span>
+          <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "2.6px", color: "#ff5667", marginTop: 4 }}>CIVIL THREAT-CONVERGENCE GRID</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: SOURCED_COLOR, boxShadow: `0 0 8px ${SOURCED_COLOR}`, animation: "hl-blink 2.2s ease-in-out infinite" }} />
+            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#bfe9ff" }}>FBI WANTED · LIVE</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#f3c25a", boxShadow: "0 0 8px #f3c25a" }} />
+            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#f3d79a" }}>NATIONAL ADVISORY · ELEVATED</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <ZuluClock />
+          <span
+            style={{
+              fontFamily: MONO,
+              fontSize: 8.5,
+              letterSpacing: "1.6px",
+              color: "#9fe7c8",
+              padding: "3px 8px",
+              border: "1px solid rgba(159,231,200,0.4)",
+              borderRadius: 3,
+            }}
+          >
+            ● SECURE
+          </span>
+        </div>
+      </div>
+
+      {/* ---- body: 3 columns (wide) or stacked (narrow) ---- */}
+      <div
+        style={
+          wide
+            ? {
+                flex: 1,
+                minHeight: 0,
+                display: "grid",
+                gridTemplateColumns: "clamp(190px, 17vw, 250px) minmax(0, 1fr) clamp(290px, 25vw, 380px)",
+                gap: 14,
+                padding: 14,
+                overflow: "hidden",
+              }
+            : {
+                flex: 1,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                padding: 12,
+                overflowY: "auto",
+                overflowX: "hidden",
+              }
+        }
+      >
+        {/* LEFT panel — docked left, draggable on wide screens */}
+        <DraggablePanel title="THREAT INTEL" draggable={wide} resetSignal={resetSignal} style={{ maxHeight: wide ? undefined : "52dvh" }}>
+          {leftBody}
+        </DraggablePanel>
+
+        {/* CENTER — map (centerpiece) + legend, never overlapped by panels */}
+        <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 8, minWidth: 0, minHeight: wide ? 0 : "46dvh", order: wide ? 0 : -1 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: wide ? 0 : "40dvh",
+              position: "relative",
+              borderRadius: 9,
+              overflow: "hidden",
+              border: "1px solid rgba(120,180,210,0.12)",
+            }}
+          >
             <HomelandMap suspects={visible} selectedState={stateFilter} onSelectState={setStateFilter} />
           </div>
 
-          {/* top command bar */}
+          {/* map key legend — under the map, not over it */}
           <div
             style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              right: 0,
-              height: 54,
-              zIndex: 12,
+              flex: "0 0 auto",
               display: "flex",
               alignItems: "center",
-              justifyContent: "space-between",
-              padding: "0 22px",
-              background: "linear-gradient(180deg, rgba(9,12,17,0.95), rgba(9,12,17,0.45))",
-              backdropFilter: "blur(9px)",
-              WebkitBackdropFilter: "blur(9px)",
-              borderBottom: "1px solid rgba(243,194,90,0.22)",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-              <div
-                style={{
-                  width: 14,
-                  height: 14,
-                  transform: "rotate(45deg)",
-                  background: "linear-gradient(135deg,#f3c25a,#c4122b)",
-                  boxShadow: "0 0 12px rgba(243,194,90,0.55)",
-                }}
-              />
-              <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
-                <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: 15, letterSpacing: "3.5px", color: "#eef4f8" }}>
-                  PROJECT HOMELAND
-                </span>
-                <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "2.6px", color: "#ff5667", marginTop: 4 }}>
-                  CIVIL THREAT-CONVERGENCE GRID
-                </span>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: SOURCED_COLOR,
-                    boxShadow: `0 0 8px ${SOURCED_COLOR}`,
-                    animation: "hl-blink 2.2s ease-in-out infinite",
-                  }}
-                />
-                <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#bfe9ff" }}>
-                  FBI WANTED · LIVE
-                </span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#f3c25a", boxShadow: "0 0 8px #f3c25a" }} />
-                <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#f3d79a" }}>
-                  NATIONAL ADVISORY · ELEVATED
-                </span>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-              <ZuluClock />
-              <span
-                style={{
-                  fontFamily: MONO,
-                  fontSize: 8.5,
-                  letterSpacing: "1.6px",
-                  color: "#9fe7c8",
-                  padding: "3px 8px",
-                  border: "1px solid rgba(159,231,200,0.4)",
-                  borderRadius: 3,
-                }}
-              >
-                ● SECURE
-              </span>
-            </div>
-          </div>
-
-          {/* left rail: real aggregates + filter controls */}
-          <div
-            style={{
-              position: "absolute",
-              left: 18,
-              top: 70,
-              width: 214,
-              zIndex: 11,
-              background: "rgba(9,13,19,0.62)",
-              backdropFilter: "blur(11px)",
-              WebkitBackdropFilter: "blur(11px)",
-              border: "1px solid rgba(120,180,210,0.16)",
-              borderRadius: 9,
-              padding: "14px 14px 15px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 13,
-            }}
-          >
-            {/* WANTED CATEGORIES — click a row to filter by that subject */}
-            <div>
-              <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 11 }}>
-                WANTED CATEGORIES
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {categories.length === 0 && (
-                  <div style={{ fontFamily: MONO, fontSize: 9, color: "#5d7180" }}>no categories</div>
-                )}
-                {categories.map(([label, n]) => {
-                  const active = category === label;
-                  return (
-                    <button
-                      key={label}
-                      type="button"
-                      onClick={() => toggleCategory(label)}
-                      title={`Filter: ${label}`}
-                      style={{
-                        ...btnReset,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 5,
-                        width: "100%",
-                        padding: "4px 6px",
-                        margin: "0 -6px",
-                        borderRadius: 5,
-                        background: active ? hexA(SOURCED_COLOR, 0.1) : "transparent",
-                        border: active ? `1px solid ${hexA(SOURCED_COLOR, 0.5)}` : "1px solid transparent",
-                        transition: "background .15s",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span
-                          style={{
-                            width: 11,
-                            height: 11,
-                            borderRadius: 3,
-                            background: SOURCED_COLOR,
-                            boxShadow: `0 0 8px ${SOURCED_COLOR}`,
-                            flex: "0 0 auto",
-                            opacity: active || !category ? 1 : 0.4,
-                          }}
-                        />
-                        <span
-                          style={{
-                            fontFamily: LABEL,
-                            fontSize: 11,
-                            fontWeight: 600,
-                            letterSpacing: "0.5px",
-                            color: active ? "#eef4f8" : "#dce8ef",
-                            flex: 1,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            textAlign: "left",
-                          }}
-                        >
-                          {label}
-                        </span>
-                        <span style={{ fontFamily: MONO, fontSize: 9, color: active ? SOURCED_COLOR : "#7c93a1" }}>{n}</span>
-                      </div>
-                      <div style={{ height: 3, borderRadius: 2, background: "rgba(120,160,185,0.14)", overflow: "hidden" }}>
-                        <div
-                          style={{
-                            height: "100%",
-                            width: (n / catMax) * 100 + "%",
-                            borderRadius: 2,
-                            background: `linear-gradient(90deg,${hexA(SOURCED_COLOR, 0.4)},${SOURCED_COLOR})`,
-                            boxShadow: `0 0 6px ${hexA(SOURCED_COLOR, 0.55)}`,
-                          }}
-                        />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
-
-            {/* SITUATION — real counts (overview of the full set) */}
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 9 }}>
-                <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab" }}>
-                  SITUATION
-                </span>
-                <span style={{ fontFamily: LABEL, fontSize: 20, fontWeight: 800, color: SOURCED_COLOR, lineHeight: 1, textShadow: "0 0 12px rgba(95,230,255,0.5)" }}>
-                  {total}
-                </span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                <SituationRow label="MAPPED / TOTAL" value={`${mapped} / ${total}`} />
-                <SituationRow label="UNMAPPED" value={String(unmapped)} />
-                <SituationRow label="ARMED & DANGEROUS" value={String(armed)} valueColor="#ff5667" />
-              </div>
-            </div>
-
-            <div style={{ height: 1, background: "rgba(120,180,210,0.14)" }} />
-
-            {/* DATA INTEGRITY — click a row to filter by data_class (the wall) */}
-            <div>
-              <div style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "2.4px", color: "#7f9aab", marginBottom: 10 }}>
-                DATA INTEGRITY
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <IntegrityRow
-                  active={source === "official"}
-                  onClick={() => toggleSource("official")}
-                  swatch={
-                    <span
-                      style={{
-                        width: 15,
-                        height: 15,
-                        borderRadius: 3,
-                        background: "rgba(159,231,200,0.16)",
-                        border: "1.5px solid #9fe7c8",
-                        boxShadow: "0 0 7px rgba(159,231,200,0.35)",
-                        flex: "0 0 auto",
-                      }}
-                    />
-                  }
-                  title="SOURCED"
-                  titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.8px", color: "#dce8ef" }}
-                  subtitle="confirmed federal record"
-                  count={sourcedCount}
-                  countColor="#9fe7c8"
-                  activeColor="#9fe7c8"
-                />
-                <IntegrityRow
-                  active={source === "analytical"}
-                  onClick={() => toggleSource("analytical")}
-                  swatch={<span style={{ width: 15, height: 15, borderRadius: 3, background: "transparent", border: "1.5px dashed #f3c25a", flex: "0 0 auto" }} />}
-                  title="ANALYTICAL"
-                  titleStyle={{ fontFamily: LABEL, fontSize: 10.5, fontWeight: 600, fontStyle: "italic", letterSpacing: "0.8px", color: "#dce8ef" }}
-                  subtitle="inference — walled off"
-                  count={analyticalCount}
-                  countColor="#7c93a1"
-                  activeColor="#f3c25a"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* right panel: active records (real FBI suspect_profiles) */}
-          <div
-            style={{
-              position: "absolute",
-              right: 18,
-              top: 70,
-              bottom: 54,
-              width: 338,
-              zIndex: 11,
-              background: "rgba(9,13,19,0.66)",
-              backdropFilter: "blur(11px)",
-              WebkitBackdropFilter: "blur(11px)",
-              border: "1px solid rgba(120,180,210,0.16)",
-              borderRadius: 9,
-              padding: "14px 12px 6px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px 4px" }}>
-              <span style={{ fontFamily: LABEL, fontSize: 13, fontWeight: 700, letterSpacing: "2.6px", color: "#eef4f8" }}>ACTIVE RECORDS</span>
-              <span
-                style={{
-                  fontFamily: MONO,
-                  fontSize: 10,
-                  color: "#06121a",
-                  background: anyActive ? "#f3c25a" : SOURCED_COLOR,
-                  padding: "2px 7px",
-                  borderRadius: 3,
-                  fontWeight: 600,
-                }}
-              >
-                {anyActive ? `${visible.length} / ${total}` : total}
-              </span>
-            </div>
-            <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.5px", color: "#7c93a1", padding: "0 2px 9px" }}>
-              {visSourced} SOURCED · {visInferred} INFERRED
-            </div>
-
-            {/* quick filter chips */}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 2px 8px" }}>
-              <FilterChip text={`ALL ${total}`} active={!anyActive} onClick={clearAll} />
-              <FilterChip text={`MAPPED ${mapped}`} active={quick === "mapped"} onClick={() => toggleQuick("mapped")} />
-              <FilterChip text={`ARMED ${armed}`} active={quick === "armed"} onClick={() => toggleQuick("armed")} />
-            </div>
-
-            {/* active-filter tags (removable) — only when something is filtered */}
-            {anyActive && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "0 2px 9px" }}>
-                <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "1px", color: "#5d7180", flex: "0 0 auto" }}>FILTERS</span>
-                {activeTags.map((t) => (
-                  <button key={t.key} type="button" onClick={t.clear} title={`Remove ${t.label}`} style={{ ...btnReset, ...tagStyle }}>
-                    <span
-                      style={{
-                        maxWidth: 120,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        display: "inline-block",
-                        verticalAlign: "bottom",
-                      }}
-                    >
-                      {t.label}
-                    </span>
-                    <span style={{ color: "#f3c25a", fontWeight: 700 }}> ✕</span>
-                  </button>
-                ))}
-                <button key="clear" type="button" onClick={clearAll} title="Clear all filters" style={{ ...btnReset, ...clearStyle }}>
-                  CLEAR
-                </button>
-              </div>
-            )}
-
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                overflowX: "hidden",
-                display: "flex",
-                flexDirection: "column",
-                gap: 7,
-                padding: "0 2px",
-                WebkitMaskImage: "linear-gradient(180deg,#000 96%,transparent)",
-                maskImage: "linear-gradient(180deg,#000 96%,transparent)",
-              }}
-            >
-              {visible.length === 0 ? (
-                <div
-                  style={{
-                    fontFamily: MONO,
-                    fontSize: 10,
-                    letterSpacing: "1px",
-                    color: "#5d7180",
-                    textAlign: "center",
-                    padding: "26px 8px",
-                    border: "1px dashed rgba(120,180,210,0.25)",
-                    borderRadius: 7,
-                    marginTop: 4,
-                  }}
-                >
-                  NO RECORDS MATCH
-                  <br />
-                  <button type="button" onClick={clearAll} style={{ ...btnReset, ...clearStyle, marginTop: 10, display: "inline-block" }}>
-                    CLEAR FILTERS
-                  </button>
-                </div>
-              ) : (
-                visible.map((s) => <RecordCard key={s.id} s={s} />)
-              )}
-            </div>
-          </div>
-
-          {/* bottom marker key */}
-          <div
-            style={{
-              position: "absolute",
-              left: 246,
-              bottom: 16,
-              zIndex: 11,
-              display: "flex",
-              alignItems: "center",
+              justifyContent: "center",
               gap: 16,
+              flexWrap: "wrap",
               background: "rgba(9,13,19,0.6)",
               backdropFilter: "blur(8px)",
               WebkitBackdropFilter: "blur(8px)",
               border: "1px solid rgba(120,180,210,0.16)",
               borderRadius: 7,
-              padding: "8px 14px",
+              padding: "7px 14px",
             }}
           >
             <span style={{ fontFamily: LABEL, fontSize: 9, fontWeight: 700, letterSpacing: "2px", color: "#7f9aab" }}>MAP KEY</span>
@@ -605,12 +535,180 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
               <span style={{ width: 11, height: 11, borderRadius: 3, background: hexA(SOURCED_COLOR, 0.12), border: `1.5px solid ${hexA(SOURCED_COLOR, 0.8)}` }} />
               <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#aebfc9" }}>STATE WITH RECORDS</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>CLICK A STATE TO FILTER · {unmapped} UNMAPPED</span>
-            </div>
+            <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>CLICK A STATE TO FILTER · {unmapped} UNMAPPED</span>
           </div>
         </div>
+
+        {/* RIGHT panel — docked right, draggable on wide screens */}
+        <DraggablePanel
+          title={
+            <>
+              ACTIVE RECORDS
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 10,
+                  color: "#06121a",
+                  background: anyActive ? "#f3c25a" : SOURCED_COLOR,
+                  padding: "2px 7px",
+                  borderRadius: 3,
+                  fontWeight: 600,
+                  marginLeft: 8,
+                }}
+              >
+                {anyActive ? `${visible.length} / ${total}` : total}
+              </span>
+            </>
+          }
+          draggable={wide}
+          resetSignal={resetSignal}
+          style={{ maxHeight: wide ? undefined : "70dvh" }}
+        >
+          {rightBody}
+        </DraggablePanel>
       </div>
+    </div>
+  );
+}
+
+// ---- draggable sticky-note panel (lightweight pointer-event drag) -----------
+
+const panelGlass: CSSProperties = {
+  background: "rgba(9,13,19,0.64)",
+  backdropFilter: "blur(11px)",
+  WebkitBackdropFilter: "blur(11px)",
+  border: "1px solid rgba(120,180,210,0.16)",
+  borderRadius: 9,
+  overflow: "hidden",
+};
+
+function DraggablePanel({
+  title,
+  draggable,
+  resetSignal,
+  style,
+  children,
+}: {
+  title: React.ReactNode;
+  draggable: boolean;
+  resetSignal: string;
+  style?: CSSProperties;
+  children: React.ReactNode;
+}) {
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [opacity, setOpacity] = useState(1);
+  const [dragging, setDragging] = useState(false);
+  const start = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
+
+  // session-only positions: reset to docked layout on any window resize so drag
+  // never fights the responsive layout (syncing to the external resize signal).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOffset({ x: 0, y: 0 });
+  }, [resetSignal]);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!draggable) return;
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* no active pointer (e.g. synthetic event) — drag still tracks via move */
+    }
+    start.current = { px: e.clientX, py: e.clientY, ox: offset.x, oy: offset.y };
+    setDragging(true);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragging || !start.current) return;
+    setOffset({ x: start.current.ox + (e.clientX - start.current.px), y: start.current.oy + (e.clientY - start.current.py) });
+  };
+  const endDrag = (e: React.PointerEvent) => {
+    if (!dragging) return;
+    setDragging(false);
+    start.current = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer may already be released */
+    }
+  };
+
+  return (
+    <div
+      style={{
+        ...panelGlass,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        opacity,
+        zIndex: dragging ? 30 : 20,
+        transform: draggable && (offset.x !== 0 || offset.y !== 0) ? `translate(${offset.x}px, ${offset.y}px)` : undefined,
+        boxShadow: dragging ? "0 18px 50px rgba(0,0,0,0.6)" : undefined,
+        transition: dragging ? "none" : "opacity .15s",
+        ...style,
+      }}
+    >
+      {/* header = drag handle */}
+      <div
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        style={{
+          flex: "0 0 auto",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "8px 11px",
+          borderBottom: "1px solid rgba(120,180,210,0.14)",
+          cursor: draggable ? (dragging ? "grabbing" : "grab") : "default",
+          touchAction: draggable ? "none" : undefined,
+          userSelect: "none",
+        }}
+      >
+        <span style={{ fontFamily: LABEL, fontSize: 12, fontWeight: 700, letterSpacing: "2px", color: "#cdd9e2", display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+          {draggable && <GripIcon />}
+          {title}
+        </span>
+        <OpacityControl value={opacity} onChange={setOpacity} />
+      </div>
+
+      {/* body */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
+    </div>
+  );
+}
+
+function GripIcon() {
+  return (
+    <svg width="8" height="12" viewBox="0 0 8 12" fill="rgba(159,179,192,0.7)" style={{ flex: "0 0 auto" }} aria-hidden="true">
+      <circle cx="2" cy="2" r="1" />
+      <circle cx="6" cy="2" r="1" />
+      <circle cx="2" cy="6" r="1" />
+      <circle cx="6" cy="6" r="1" />
+      <circle cx="2" cy="10" r="1" />
+      <circle cx="6" cy="10" r="1" />
+    </svg>
+  );
+}
+
+function OpacityControl({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" }} title="Panel opacity">
+      <span style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "1px", color: "#5d7180" }}>OPACITY</span>
+      <input
+        type="range"
+        min={25}
+        max={100}
+        step={5}
+        value={Math.round(value * 100)}
+        aria-label="Panel opacity"
+        onChange={(e) => onChange(parseInt(e.target.value, 10) / 100)}
+        // don't let the slider start a panel drag
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{ width: 58, accentColor: SOURCED_COLOR, cursor: "pointer" }}
+      />
     </div>
   );
 }
@@ -737,7 +835,6 @@ function RecordCard({ s }: { s: PublicSuspect }) {
   const sourced = s.data_class === "official";
   const sc = statusColor(s);
   const subs = subjectsShort(s);
-  // show the state code, but only if the basemap can plot it; otherwise UNMAPPED.
   const stateLabel = isMappable(s.primary_state) ? (s.primary_state as string) : "UNMAPPED";
   const locParts = [stateLabel, subs].filter(Boolean);
 
@@ -753,16 +850,7 @@ function RecordCard({ s }: { s: PublicSuspect }) {
     border: sourced ? "1px solid rgba(120,180,210,0.2)" : "1.5px dashed rgba(150,170,190,0.34)",
   };
   const accent: CSSProperties = sourced
-    ? {
-        position: "absolute",
-        left: 0,
-        top: 8,
-        bottom: 8,
-        width: 3,
-        borderRadius: "0 3px 3px 0",
-        background: SOURCED_COLOR,
-        boxShadow: `0 0 8px ${SOURCED_COLOR}`,
-      }
+    ? { position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: "0 3px 3px 0", background: SOURCED_COLOR, boxShadow: `0 0 8px ${SOURCED_COLOR}` }
     : {
         position: "absolute",
         left: 0,
@@ -787,9 +875,7 @@ function RecordCard({ s }: { s: PublicSuspect }) {
       ) : null}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          {!s.image_url && (
-            <span style={{ width: 7, height: 7, borderRadius: 2, background: SOURCED_COLOR, boxShadow: `0 0 6px ${SOURCED_COLOR}`, flex: "0 0 auto" }} />
-          )}
+          {!s.image_url && <span style={{ width: 7, height: 7, borderRadius: 2, background: SOURCED_COLOR, boxShadow: `0 0 6px ${SOURCED_COLOR}`, flex: "0 0 auto" }} />}
           <span
             style={{
               fontFamily: LABEL,
@@ -821,17 +907,7 @@ function RecordCard({ s }: { s: PublicSuspect }) {
             {sourced ? "SOURCED" : "INFERRED"}
           </span>
         </div>
-        <div
-          style={{
-            fontFamily: MONO,
-            fontSize: 8.5,
-            letterSpacing: "0.4px",
-            color: "#7c93a1",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
+        <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.4px", color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {locParts.join("  ·  ")}
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 1 }}>
