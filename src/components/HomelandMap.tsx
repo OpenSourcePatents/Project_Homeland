@@ -61,6 +61,15 @@ export interface HomelandMapProps {
 
 const SELECTED_COLOR = "#f3c25a";
 
+// Tiny NE states whose centers are too cramped for a count badge — their count
+// rides the leader-lined label column on the right instead.
+const SMALL_STATES: Record<string, true> = { vt: true, nh: true, ma: true, ri: true, ct: true, nj: true, de: true, md: true };
+
+// Count-badge radius scales (sub-linearly) with the number of records in a state.
+function badgeRadius(count: number): number {
+  return Math.max(7.5, Math.min(7.5 + Math.sqrt(count) * 1.7, 17));
+}
+
 type MapStatus = "loading" | "ready" | "failed";
 
 // Stop polling after this many 40ms ticks (~6s) so a CDN/CSP/offline failure
@@ -243,20 +252,13 @@ export default function HomelandMap({
       })
     : [];
 
-  // markers / lines / zones / labels only after centers are measured
-  type Marker = {
-    id: string;
-    code: string;
-    cx: number;
-    cy: number;
-    sourced: boolean;
-    ringStyle: CSSProperties;
-    dotFill: string;
-    dotStroke: string;
-    dash: string;
-    dotStyle: CSSProperties;
-  };
-  let markers: Marker[] = [];
+  // state CLUSTER badges (one per occupied state), computed after centers are
+  // measured. This REPLACES ~1,196 per-suspect markers (each previously carrying a
+  // continuous hl-pulse animation) with ~50 static count badges — the single
+  // biggest render win. Animation is limited to the selected state's badge.
+  type Cluster = { code: string; cx: number; cy: number; count: number; r: number; selected: boolean };
+  let clusters: Cluster[] = [];
+  let smallDots: { cx: number; cy: number; selected: boolean }[] = [];
   let lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
   const zoneBlobs: { cx: number; cy: number; r: number; fill: string; style: CSSProperties }[] = [];
   const zoneOutlines: { cx: number; cy: number; r: number }[] = [];
@@ -264,48 +266,28 @@ export default function HomelandMap({
   let labelEls: React.ReactNode[] = [];
 
   if (centers) {
-    // one marker per state-resolved suspect; jitter when several share a state
-    const built: Marker[] = [];
+    const builtClusters: Cluster[] = [];
+    const builtSmall: { cx: number; cy: number; selected: boolean }[] = [];
     Object.entries(byState).forEach(([code, group]) => {
       const ctr = centers[code];
       if (!ctr) return;
-      const n = group.length;
-      // spread co-located markers on a ring; widen it a touch with the count so a
-      // busy state's dots stay distinguishable (capped so they don't fly off-state).
-      const rad = Math.min(6 + n, 13);
-      group.forEach((s, i) => {
-        let cx = ctr.x;
-        let cy = ctr.y;
-        if (n > 1) {
-          const ang = (i / n) * Math.PI * 2;
-          cx += Math.cos(ang) * rad;
-          cy += Math.sin(ang) * rad;
-        }
-        // data_class is always 'official' here, but keep the branch for later.
-        const sourced = s.data_class === "official";
-        built.push({
-          id: s.id,
+      const selectedHere = !!selectedState && code.toUpperCase() === selectedState;
+      if (SMALL_STATES[code]) {
+        // tiny NE state: anchor dot at center; the count rides the column label below
+        builtSmall.push({ cx: ctr.x, cy: ctr.y, selected: selectedHere });
+      } else {
+        builtClusters.push({
           code,
-          cx,
-          cy,
-          sourced,
-          ringStyle: {
-            transformBox: "fill-box",
-            transformOrigin: "center",
-            animation: "hl-pulse 2.8s ease-out infinite",
-          },
-          dotFill: sourced ? SOURCED_COLOR : "rgba(8,12,16,0.75)",
-          dotStroke: sourced ? "#ffffff" : SOURCED_COLOR,
-          dash: sourced ? "none" : "1.6 1.6",
-          dotStyle: {
-            filter: sourced
-              ? `drop-shadow(0 0 3px ${SOURCED_COLOR})`
-              : `drop-shadow(0 0 2px ${hexA(SOURCED_COLOR, 0.7)})`,
-          },
+          cx: ctr.x,
+          cy: ctr.y,
+          count: group.length,
+          r: badgeRadius(group.length),
+          selected: selectedHere,
         });
-      });
+      }
     });
-    markers = built;
+    clusters = builtClusters;
+    smallDots = builtSmall;
 
     // convergence association lines — empty array now -> renders nothing
     if (showConnectors) {
@@ -347,35 +329,37 @@ export default function HomelandMap({
       });
     }
 
-    // labels as real SVG <text>: state codes (geometry, not network data) + any zone labels
-    const built2 = buildLabels(centers, occupied, zoneLabelData);
+    // labels: state codes + per-state counts (the count for tiny states rides the column)
+    const built2 = buildLabels(centers, byState, zoneLabelData);
     leaderLines = built2.leaders;
     labelEls = built2.els;
   }
 
   function buildLabels(
     c: Centers,
-    occupiedCodes: Set<string>,
+    byStateMap: Record<string, PublicSuspect[]>,
     zoneLabelData: {
       cx: number; cy: number; rad: number;
       label: string; pct: number; colorA: string; colorB: string;
     }[],
   ) {
-    const smallSet: Record<string, number> = { vt: 1, nh: 1, ma: 1, ri: 1, ct: 1, nj: 1, de: 1, md: 1 };
     const els: React.ReactNode[] = [];
-    const smallArr: { code: string; c: { x: number; y: number }; color: string }[] = [];
+    const smallArr: { code: string; c: { x: number; y: number }; color: string; count: number }[] = [];
     const leaders: { x1: number; y1: number; x2: number; y2: number }[] = [];
 
     Object.keys(c).forEach((code) => {
       const ctr = c[code];
-      const has = occupiedCodes.has(code);
+      const count = byStateMap[code]?.length ?? 0;
+      const has = count > 0;
       const col = has ? SOURCED_COLOR : "rgba(165,210,232,0.66)";
-      if (smallSet[code]) {
-        smallArr.push({ code, c: ctr, color: col });
+      if (SMALL_STATES[code]) {
+        smallArr.push({ code, c: ctr, color: col, count });
         return;
       }
+      // normal states: occupied -> code sits ABOVE its count badge; empty -> at center
+      const y = has ? ctr.y - badgeRadius(count) - 3 : ctr.y + 2.6;
       els.push(
-        <text key={"b_" + code} x={ctr.x} y={ctr.y + (has ? 7.6 : 2.6)} textAnchor="middle" style={codeStyle(col, 8)}>
+        <text key={"b_" + code} x={ctr.x} y={y} textAnchor="middle" style={codeStyle(col, 8)}>
           {code.toUpperCase()}
         </text>,
       );
@@ -391,6 +375,7 @@ export default function HomelandMap({
       els.push(
         <text key={"s_" + o.code} x={sx} y={ly} textAnchor="start" style={codeStyle(o.color, 8.5)}>
           {o.code.toUpperCase()}
+          {o.count > 0 ? ` ${o.count}` : ""}
         </text>,
       );
     });
@@ -441,6 +426,12 @@ export default function HomelandMap({
               <stop offset="72%" stopColor={g.c2} />
             </radialGradient>
           ))}
+          {/* static glow behind each cluster badge — one reused gradient, no animation */}
+          <radialGradient id="cluster-halo" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={hexA(SOURCED_COLOR, 0.34)} />
+            <stop offset="55%" stopColor={hexA(SOURCED_COLOR, 0.13)} />
+            <stop offset="100%" stopColor={hexA(SOURCED_COLOR, 0)} />
+          </radialGradient>
         </defs>
 
         <g style={baseGlow}>
@@ -485,31 +476,56 @@ export default function HomelandMap({
           ))}
         </g>
 
+        {/* state cluster count badges — ≤ one per state (was ~1,196 dots) */}
         <g>
-          {markers.map((m) => (
-            <g
-              key={m.id}
-              onClick={onSelectState ? () => toggleState(m.code) : undefined}
-              style={onSelectState ? { cursor: "pointer" } : undefined}
-            >
-              {m.sourced && (
-                <circle cx={m.cx} cy={m.cy} r={5} fill="none" stroke={SOURCED_COLOR} strokeWidth="0.9" style={m.ringStyle} />
-              )}
-              {!m.sourced && (
-                <circle cx={m.cx} cy={m.cy} r={5.5} fill="none" stroke={SOURCED_COLOR} strokeWidth="0.7" strokeDasharray="2 2" opacity="0.5" />
-              )}
-              <circle
-                cx={m.cx}
-                cy={m.cy}
-                r={m.sourced ? 3.4 : 3.2}
-                fill={m.dotFill}
-                stroke={m.dotStroke}
-                strokeWidth="0.8"
-                strokeDasharray={m.dash}
-                style={m.dotStyle}
-              />
-            </g>
+          {smallDots.map((d, i) => (
+            <circle key={"sd" + i} cx={d.cx} cy={d.cy} r={2.6} fill={d.selected ? SELECTED_COLOR : SOURCED_COLOR} stroke="#06121a" strokeWidth="0.5" />
           ))}
+          {clusters.map((c) => {
+            const color = c.selected ? SELECTED_COLOR : SOURCED_COLOR;
+            const fs = Math.max(8, Math.min(c.r * 0.95, 12));
+            return (
+              <g
+                key={"cl" + c.code}
+                onClick={onSelectState ? () => toggleState(c.code) : undefined}
+                style={onSelectState ? { cursor: "pointer" } : undefined}
+              >
+                <title>{`${c.code.toUpperCase()} · ${c.count} record${c.count === 1 ? "" : "s"}`}</title>
+                {/* static glow halo (radial gradient fill — no per-marker animation) */}
+                <circle cx={c.cx} cy={c.cy} r={c.r * 1.85} fill="url(#cluster-halo)" />
+                {/* animated pulse ONLY on the selected state (≤1 at a time) */}
+                {c.selected && (
+                  <circle
+                    cx={c.cx}
+                    cy={c.cy}
+                    r={c.r + 3}
+                    fill="none"
+                    stroke={SELECTED_COLOR}
+                    strokeWidth="1"
+                    style={{ transformBox: "fill-box", transformOrigin: "center", animation: "hl-pulse 2.8s ease-out infinite" }}
+                  />
+                )}
+                <circle cx={c.cx} cy={c.cy} r={c.r} fill="rgba(8,12,16,0.85)" stroke={color} strokeWidth="1.2" />
+                <text
+                  x={c.cx}
+                  y={c.cy}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  style={{
+                    fontFamily: "'Oxanium', sans-serif",
+                    fontSize: fs + "px",
+                    fontWeight: 700,
+                    fill: color,
+                    paintOrder: "stroke",
+                    stroke: "rgba(6,10,14,0.9)",
+                    strokeWidth: "2px",
+                  }}
+                >
+                  {c.count}
+                </text>
+              </g>
+            );
+          })}
         </g>
 
         <g>
