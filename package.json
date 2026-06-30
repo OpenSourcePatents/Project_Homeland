@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "db:check": "tsx scripts/db-check.ts",
-    "import:fbi": "tsx scripts/import-fbi.ts"
+    "import:fbi": "tsx scripts/import-fbi.ts",
+    "sync:fbi": "tsx scripts/sync-fbi.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

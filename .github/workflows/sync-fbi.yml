@@ -1,0 +1,39 @@
+name: FBI Daily Sync
+
+# Runs the full FBI Wanted sync once a day, plus a manual "Run workflow" button.
+# The sync exits non-zero when any page failed (twice in a row), which surfaces
+# here as a FAILED run even though it still applied everything it managed to fetch.
+on:
+  schedule:
+    # 09:00 UTC daily — low-traffic window. (cron is always UTC on GitHub.)
+    - cron: '0 9 * * *'
+  workflow_dispatch: {}
+
+# If a daily run is somehow still going when the next fires, don't overlap.
+concurrency:
+  group: fbi-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run FBI sync
+        env:
+          # Provided as a GitHub repo secret (Settings → Secrets and variables →
+          # Actions). Never hardcode the connection string here.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx tsx scripts/sync-fbi.ts
