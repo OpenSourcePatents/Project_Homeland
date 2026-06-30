@@ -2,6 +2,7 @@
 
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import HomelandMap from "@/components/HomelandMap";
+import SuspectModal from "@/components/SuspectModal";
 import type { PublicSuspect } from "@/lib/public-suspect";
 import { hexA } from "@/lib/color";
 import { isMappable } from "@/lib/us-states";
@@ -77,29 +78,58 @@ function subjectsShort(s: PublicSuspect): string {
 
 // ---- live ZULU clock (hydration proof) --------------------------------------
 
-const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-function ZuluClock() {
+/** The viewer's IANA timezone, or America/New_York (Eastern — covers New
+ *  Hampshire) as a fallback when the environment can't report one. */
+function viewerTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
+  } catch {
+    return "America/New_York";
+  }
+}
+
+function LiveClock() {
+  // null until mounted so server and client render the SAME placeholder (no
+  // hydration mismatch); the interval then drives a live tick every second.
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    // Seed the live UTC time on mount, then tick every second.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const time = now
-    ? `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} ZULU`
-    : "--:--:-- ZULU";
-  const date = now ? `${pad2(now.getUTCDate())} ${MONTHS[now.getUTCMonth()]} ${now.getUTCFullYear()}` : "-- --- ----";
+  let local = "--:--:--";
+  let zulu = "--:--:-- ZULU";
+  let dateStr = "-- --- ----";
+  if (now) {
+    const tz = viewerTimeZone();
+    // viewer-local time with its zone abbreviation, e.g. "14:23:05 EDT"
+    local = new Intl.DateTimeFormat("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: tz,
+      timeZoneName: "short",
+    }).format(now);
+    // Zulu (UTC) readout kept alongside
+    zulu = `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} ZULU`;
+    // day-first date in the viewer's zone, e.g. "29 JUN 2026"
+    dateStr = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: tz })
+      .format(now)
+      .toUpperCase();
+  }
 
   return (
-    <>
-      <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: "1px", color: "#9fdcef" }}>{time}</span>
-      <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "1px", color: "#5d7180" }}>{date}</span>
-    </>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.3 }}>
+      <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: "1px", color: "#9fdcef" }}>{local}</span>
+      <span style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.8px", color: "#5d7180" }}>
+        {zulu} · {dateStr}
+      </span>
+    </div>
   );
 }
 
@@ -134,6 +164,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   const [category, setCategory] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<string | null>(null);
   const [source, setSource] = useState<SourceFilter>("all");
+  const [selected, setSelected] = useState<PublicSuspect | null>(null); // open record modal
 
   const anyActive = quick !== "all" || category !== null || stateFilter !== null || source !== "all";
 
@@ -146,7 +177,9 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
 
   // ---- real aggregates over the FULL dataset (the rail is an overview) ------
   const total = suspects.length;
-  const mapped = suspects.filter((s) => isMappable(s.primary_state)).length;
+  // "mapped" now reflects the recovered location (resolved_state), so the rail
+  // matches what the map plots after location-recovery (003).
+  const mapped = suspects.filter((s) => isMappable(s.resolved_state)).length;
   const unmapped = total - mapped;
   const armed = suspects.filter(isArmed).length;
   const sourcedCount = suspects.filter((s) => s.data_class === "official").length;
@@ -166,10 +199,10 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   // No manual useMemo: React Compiler (Next 16) memoizes this automatically, and
   // filtering 20 rows is trivial. The SAME array feeds the list and the map.
   const visible = suspects.filter((s) => {
-    if (quick === "mapped" && !isMappable(s.primary_state)) return false;
+    if (quick === "mapped" && !isMappable(s.resolved_state)) return false;
     if (quick === "armed" && !isArmed(s)) return false;
     if (category && !(s.subjects ?? []).includes(category)) return false;
-    if (stateFilter && (s.primary_state ?? "").toUpperCase() !== stateFilter) return false;
+    if (stateFilter && (s.resolved_state ?? "").toUpperCase() !== stateFilter) return false;
     if (source !== "all" && s.data_class !== source) return false;
     return true;
   });
@@ -396,7 +429,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
             </button>
           </div>
         ) : (
-          visible.map((s) => <RecordCard key={s.id} s={s} />)
+          visible.map((s) => <RecordCard key={s.id} s={s} onOpen={() => setSelected(s)} />)
         )}
       </div>
     </div>
@@ -447,7 +480,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <ZuluClock />
+          <LiveClock />
           <span
             style={{
               fontFamily: MONO,
@@ -567,6 +600,9 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
           {rightBody}
         </DraggablePanel>
       </div>
+
+      {/* record detail modal (lazy-loads detail from the wall-enforced route) */}
+      <SuspectModal suspect={selected} onClose={() => setSelected(null)} />
     </div>
   );
 }
@@ -831,21 +867,23 @@ function IntegrityRow({
   );
 }
 
-function RecordCard({ s }: { s: PublicSuspect }) {
+function RecordCard({ s, onOpen }: { s: PublicSuspect; onOpen: () => void }) {
   const sourced = s.data_class === "official";
   const sc = statusColor(s);
   const subs = subjectsShort(s);
-  const stateLabel = isMappable(s.primary_state) ? (s.primary_state as string) : "UNMAPPED";
+  const stateLabel = isMappable(s.resolved_state) ? (s.resolved_state as string) : "UNMAPPED";
   const locParts = [stateLabel, subs].filter(Boolean);
 
   const card: CSSProperties = {
+    ...btnReset,
+    width: "100%",
+    textAlign: "left",
     position: "relative",
     display: "flex",
     gap: 10,
     padding: "9px 11px 9px 15px",
     borderRadius: 7,
     flex: "0 0 auto",
-    textDecoration: "none",
     background: sourced ? "rgba(18,27,36,0.68)" : "rgba(13,18,25,0.4)",
     border: sourced ? "1px solid rgba(120,180,210,0.2)" : "1.5px dashed rgba(150,170,190,0.34)",
   };
@@ -933,12 +971,9 @@ function RecordCard({ s }: { s: PublicSuspect }) {
     </>
   );
 
-  if (s.source_url) {
-    return (
-      <a href={s.source_url} target="_blank" rel="noopener noreferrer" style={card}>
-        {inner}
-      </a>
-    );
-  }
-  return <div style={card}>{inner}</div>;
+  return (
+    <button type="button" onClick={onOpen} title={`Open ${suspectName(s)}`} style={card}>
+      {inner}
+    </button>
+  );
 }

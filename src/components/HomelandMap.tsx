@@ -149,11 +149,12 @@ export default function HomelandMap({
   const U = mapStatus === "ready" && typeof window !== "undefined" ? window.usMap : undefined;
   const watch = variant === "watchfloor";
 
-  // group state-resolved suspects by lowercased state code (usMap keys are lowercase)
+  // group by resolved_state (best-available from location-recovery) — lowercased
+  // to match usMap keys. Records with no resolved state stay in the list, off the map.
   const byState: Record<string, PublicSuspect[]> = {};
   suspects.forEach((s) => {
-    if (!s.primary_state) return; // null-state records stay in the list, off the map
-    const code = s.primary_state.toLowerCase();
+    if (!s.resolved_state) return;
+    const code = s.resolved_state.toLowerCase();
     (byState[code] ||= []).push(s);
   });
   const occupied = new Set(Object.keys(byState));

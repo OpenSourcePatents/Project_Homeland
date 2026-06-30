@@ -8,14 +8,17 @@
     "start": "next start",
     "lint": "eslint",
     "db:check": "tsx scripts/db-check.ts",
+    "migrate": "tsx scripts/migrate.ts",
     "import:fbi": "tsx scripts/import-fbi.ts",
-    "sync:fbi": "tsx scripts/sync-fbi.ts"
+    "sync:fbi": "tsx scripts/sync-fbi.ts",
+    "recover": "tsx scripts/recover-and-dedupe.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
     "next": "16.2.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sanitize-html": "^2.17.5",
     "server-only": "^0.0.1"
   },
   "devDependencies": {
@@ -23,6 +26,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/sanitize-html": "^2.16.1",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
