@@ -3,7 +3,11 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import HomelandMap from "@/components/HomelandMap";
 import SuspectModal from "@/components/SuspectModal";
-import type { PublicSuspect } from "@/lib/public-suspect";
+import type { PublicSuspect, SuspectCategory } from "@/lib/public-suspect";
+import type { NtasStatus } from "@/lib/ntas"; // type-only: erased at compile time, no server-only import
+import { CATEGORY_META, CATEGORY_ORDER } from "@/lib/category";
+import { formatReward } from "@/lib/reward";
+import { groupForDisplay, type DisplayGroup } from "@/lib/grouping";
 import { hexA } from "@/lib/color";
 import { isMappable } from "@/lib/us-states";
 
@@ -66,14 +70,20 @@ function statusColor(s: PublicSuspect): string {
   }
 }
 
-function rewardShort(s: PublicSuspect): string {
-  if (!s.reward_text) return "—";
-  const m = s.reward_text.match(/\$[\d,]+/);
-  return m ? "UP TO " + m[0] : "REWARD OFFERED";
+function subjectsShort(s: PublicSuspect): string {
+  const subs = (s.subjects ?? []).filter(Boolean);
+  // never emit a dangling separator for records with no subjects (G3)
+  return subs.length ? subs.join(" · ") : "UNCATEGORIZED";
 }
 
-function subjectsShort(s: PublicSuspect): string {
-  return (s.subjects ?? []).filter(Boolean).join(" · ");
+/** Case-insensitive substring match across name, title, aliases and subjects. */
+function matchesSearch(s: PublicSuspect, q: string): boolean {
+  if (!q) return true;
+  if (suspectName(s).toLowerCase().includes(q)) return true;
+  if ((s.title ?? "").toLowerCase().includes(q)) return true;
+  if ((s.aliases ?? []).some((a) => a.toLowerCase().includes(q))) return true;
+  if ((s.subjects ?? []).some((c) => c.toLowerCase().includes(q))) return true;
+  return false;
 }
 
 // ---- live ZULU clock (hydration proof) --------------------------------------
@@ -101,23 +111,24 @@ function LiveClock() {
     return () => clearInterval(t);
   }, []);
 
-  let local = "--:--:--";
+  // "LOCAL 19:42:07 · 23:42:07 ZULU · 30 JUN 2026" — viewer's own browser
+  // timezone for LOCAL (no geolocation, no assumptions), UTC alongside.
+  let local = "LOCAL --:--:--";
   let zulu = "--:--:-- ZULU";
   let dateStr = "-- --- ----";
   if (now) {
     const tz = viewerTimeZone();
-    // viewer-local time with its zone abbreviation, e.g. "14:23:05 EDT"
-    local = new Intl.DateTimeFormat("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-      timeZone: tz,
-      timeZoneName: "short",
-    }).format(now);
-    // Zulu (UTC) readout kept alongside
+    local =
+      "LOCAL " +
+      new Intl.DateTimeFormat("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+        timeZone: tz,
+      }).format(now);
     zulu = `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} ZULU`;
-    // day-first date in the viewer's zone, e.g. "29 JUN 2026"
+    // day-first date in the viewer's zone, e.g. "30 JUN 2026"
     dateStr = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: tz })
       .format(now)
       .toUpperCase();
@@ -131,6 +142,99 @@ function LiveClock() {
       </span>
     </div>
   );
+}
+
+// ---- live DHS NTAS banner (data fetched + verified server-side) --------------
+
+const NTAS_PUBLIC_URL = "https://www.dhs.gov/national-terrorism-advisory-system";
+
+/** Banner color by advisory kind — display treatment only; the KIND ITSELF
+ *  always comes verbatim from the DHS feed (never fabricated client-side). */
+function ntasAccent(kind: string): string {
+  const k = kind.toLowerCase();
+  if (k.includes("imminent")) return "#ff3b4e";
+  if (k.includes("elevated")) return "#ff7a4e";
+  return "#f3c25a"; // bulletin / other active advisory
+}
+
+function NtasBanner({ ntas }: { ntas: NtasStatus }) {
+  let dot: React.ReactNode;
+  let label: string;
+  let color: string;
+  let href: string;
+  let snippet: string | null = null;
+
+  if (ntas.state === "active") {
+    const accent = ntasAccent(ntas.kind);
+    dot = (
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          background: accent,
+          boxShadow: `0 0 8px ${accent}`,
+          animation: "hl-blink 2.2s ease-in-out infinite",
+          flex: "0 0 auto",
+        }}
+      />
+    );
+    label = `NTAS · ${ntas.kind.toUpperCase()}`;
+    color = accent;
+    href = ntas.link;
+    snippet = ntas.summary || null;
+  } else if (ntas.state === "none") {
+    dot = <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#8aa0ad", boxShadow: "0 0 5px rgba(138,160,173,0.5)", flex: "0 0 auto" }} />;
+    label = "NTAS · NO ACTIVE ADVISORIES";
+    color = "#9fb3c0";
+    href = NTAS_PUBLIC_URL;
+  } else {
+    dot = <span style={{ width: 7, height: 7, borderRadius: "50%", background: "transparent", border: "1.5px solid #5d7180", flex: "0 0 auto" }} />;
+    label = "NTAS · STATUS UNAVAILABLE";
+    color = "#7c93a1";
+    href = NTAS_PUBLIC_URL;
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="DHS National Terrorism Advisory System"
+      style={{ display: "flex", flexDirection: "column", gap: 2, textDecoration: "none", minWidth: 0 }}
+    >
+      <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+        {dot}
+        <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color, whiteSpace: "nowrap" }}>{label}</span>
+        {snippet && (
+          <span
+            style={{
+              fontFamily: MONO,
+              fontSize: 8.5,
+              color: "#aebfc9",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: 260,
+            }}
+          >
+            {snippet}
+          </span>
+        )}
+      </span>
+      <span style={{ fontFamily: MONO, fontSize: 7, letterSpacing: "1.2px", color: "#5d7180", paddingLeft: 14 }}>SOURCE: DHS.GOV/NTAS</span>
+    </a>
+  );
+}
+
+// ---- data-freshness stamp (server-computed UTC timestamp, links to /about) ---
+
+function syncStampText(iso: string | null): string {
+  if (!iso) return "DATA SYNCED —";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "DATA SYNCED —";
+  const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  return `DATA SYNCED ${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
 }
 
 // ---- viewport hook (responsive breakpoint + resize signal) ------------------
@@ -152,27 +256,52 @@ function useViewport() {
 
 type Quick = "all" | "mapped" | "armed";
 type SourceFilter = "all" | "official" | "analytical";
+type TabKey = "ALL" | SuspectCategory;
 
-export default function CommandView({ suspects }: { suspects: PublicSuspect[] }) {
+export default function CommandView({
+  suspects,
+  ntas,
+  syncedAt,
+}: {
+  suspects: PublicSuspect[];
+  ntas: NtasStatus;
+  syncedAt: string | null;
+}) {
   const vp = useViewport();
   const wide = vp.width >= STACK_BREAKPOINT;
   // changes on any resize -> draggable panels reset to their docked positions
   const resetSignal = `${vp.width}x${vp.height}`;
 
   // ---- client-side filter state (no server round-trip) ---------------------
+  const [tab, setTab] = useState<TabKey>("ALL");
   const [quick, setQuick] = useState<Quick>("all");
-  const [category, setCategory] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>(null); // subject filter (left rail)
   const [stateFilter, setStateFilter] = useState<string | null>(null);
   const [source, setSource] = useState<SourceFilter>("all");
   const [selected, setSelected] = useState<PublicSuspect | null>(null); // open record modal
 
-  const anyActive = quick !== "all" || category !== null || stateFilter !== null || source !== "all";
+  // search: raw input + ~150ms debounced applied value (pure client filtering)
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+  const clearSearch = () => {
+    setSearchInput("");
+    setSearch("");
+  };
+
+  const anyActive = quick !== "all" || category !== null || stateFilter !== null || source !== "all" || search !== "";
+  // the ACTIVE RECORDS badge must reflect the tab narrowing too
+  const narrowed = anyActive || tab !== "ALL";
 
   const clearAll = () => {
     setQuick("all");
     setCategory(null);
     setStateFilter(null);
     setSource("all");
+    clearSearch();
   };
 
   // ---- real aggregates over the FULL dataset (the rail is an overview) ------
@@ -196,9 +325,12 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
   const catMax = categories.reduce((m, [, n]) => Math.max(m, n), 1);
 
   // ---- the pure client-side filtered view (drives BOTH list and map) -------
-  // No manual useMemo: React Compiler (Next 16) memoizes this automatically, and
-  // filtering 20 rows is trivial. The SAME array feeds the list and the map.
-  const visible = suspects.filter((s) => {
+  // No manual useMemo: React Compiler (Next 16) memoizes this automatically.
+  // preTab = every filter EXCEPT the category tab, so the tab counts stay live
+  // (faceted) under search/filters; visible = preTab narrowed to the tab. The
+  // SAME array feeds the list and the map.
+  const preTab = suspects.filter((s) => {
+    if (!matchesSearch(s, search)) return false;
     if (quick === "mapped" && !isMappable(s.resolved_state)) return false;
     if (quick === "armed" && !isArmed(s)) return false;
     if (category && !(s.subjects ?? []).includes(category)) return false;
@@ -206,14 +338,29 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
     if (source !== "all" && s.data_class !== source) return false;
     return true;
   });
+  const tabCounts: Record<SuspectCategory, number> = { WANTED: 0, MISSING: 0, SEEKING_INFO: 0 };
+  preTab.forEach((s) => {
+    tabCounts[s.category]++;
+  });
+  const visible = tab === "ALL" ? preTab : preTab.filter((s) => s.category === tab);
   const visSourced = visible.filter((s) => s.data_class === "official").length;
   const visInferred = visible.length - visSourced;
+
+  // display-level duplicate grouping (G2) — cards only; the data is untouched
+  const displayGroups = groupForDisplay(visible);
+
+  // quick-chip counts scoped to the active tab (chips filter WITHIN the tab)
+  const tabScope = tab === "ALL" ? suspects : suspects.filter((s) => s.category === tab);
+  const chipTotal = tabScope.length;
+  const chipMapped = tabScope.filter((s) => isMappable(s.resolved_state)).length;
+  const chipArmed = tabScope.filter(isArmed).length;
 
   const toggleQuick = (q: Quick) => setQuick((cur) => (cur === q ? "all" : q));
   const toggleCategory = (c: string) => setCategory((cur) => (cur === c ? null : c));
   const toggleSource = (sf: Exclude<SourceFilter, "all">) => setSource((cur) => (cur === sf ? "all" : sf));
 
   const activeTags: { key: string; label: string; clear: () => void }[] = [];
+  if (search) activeTags.push({ key: "search", label: `“${search.toUpperCase()}”`, clear: clearSearch });
   if (quick !== "all") activeTags.push({ key: "quick", label: quick.toUpperCase(), clear: () => setQuick("all") });
   if (category) activeTags.push({ key: "cat", label: category, clear: () => setCategory(null) });
   if (stateFilter) activeTags.push({ key: "state", label: `STATE ${stateFilter}`, clear: () => setStateFilter(null) });
@@ -370,11 +517,11 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
         {visSourced} SOURCED · {visInferred} INFERRED
       </div>
 
-      {/* quick filter chips */}
+      {/* quick filter chips (scoped to the active category tab) */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 2px 8px" }}>
-        <FilterChip text={`ALL ${total}`} active={!anyActive} onClick={clearAll} />
-        <FilterChip text={`MAPPED ${mapped}`} active={quick === "mapped"} onClick={() => toggleQuick("mapped")} />
-        <FilterChip text={`ARMED ${armed}`} active={quick === "armed"} onClick={() => toggleQuick("armed")} />
+        <FilterChip text={`ALL ${chipTotal}`} active={!anyActive} onClick={clearAll} />
+        <FilterChip text={`MAPPED ${chipMapped}`} active={quick === "mapped"} onClick={() => toggleQuick("mapped")} />
+        <FilterChip text={`ARMED ${chipArmed}`} active={quick === "armed"} onClick={() => toggleQuick("armed")} />
       </div>
 
       {/* active-filter tags (removable) */}
@@ -429,7 +576,7 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
             </button>
           </div>
         ) : (
-          visible.map((s) => <RecordCard key={s.id} s={s} onOpen={() => setSelected(s)} />)
+          displayGroups.map((g) => <RecordCard key={g.primary.id} group={g} onOpen={() => setSelected(g.primary)} />)
         )}
       </div>
     </div>
@@ -469,17 +616,31 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
           <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: 15, letterSpacing: "3.5px", color: "#eef4f8" }}>PROJECT HOMELAND</span>
           <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "2.6px", color: "#ff5667", marginTop: 4 }}>CIVIL THREAT-CONVERGENCE GRID</span>
         </div>
+
+        {/* search — pure client-side filtering of the loaded set (spec C) */}
+        <SearchBox value={searchInput} onChange={setSearchInput} onClear={clearSearch} />
+
         <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: SOURCED_COLOR, boxShadow: `0 0 8px ${SOURCED_COLOR}`, animation: "hl-blink 2.2s ease-in-out infinite" }} />
             <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#bfe9ff" }}>FBI WANTED · LIVE</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#f3c25a", boxShadow: "0 0 8px #f3c25a" }} />
-            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#f3d79a" }}>NATIONAL ADVISORY · ELEVATED</span>
-          </div>
+          {/* live DHS NTAS status — server-fetched, never fabricated (spec A) */}
+          <NtasBanner ntas={ntas} />
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.5 }}>
+            <a
+              href="/about"
+              title="About this data — source, sync cadence, how to report"
+              style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "1px", color: "#9fdcef", textDecoration: "none", borderBottom: "1px dotted rgba(159,220,239,0.45)" }}
+            >
+              {syncStampText(syncedAt)}
+            </a>
+            <a href="/about" style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "1.6px", color: "#7c93a1", textDecoration: "none" }}>
+              ABOUT · SOURCES →
+            </a>
+          </div>
           <LiveClock />
           <span
             style={{
@@ -495,6 +656,43 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
             ● SECURE
           </span>
         </div>
+      </div>
+
+      {/* ---- category tab strip: WANTED / MISSING / SEEKING-INFO (spec D) ---- */}
+      <div
+        style={{
+          flex: "0 0 auto",
+          zIndex: 40,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          padding: "7px 20px",
+          background: "rgba(9,12,17,0.72)",
+          borderBottom: "1px solid rgba(120,180,210,0.14)",
+        }}
+      >
+        <TabButton label="ALL" count={preTab.length} accent={SOURCED_COLOR} active={tab === "ALL"} onClick={() => setTab("ALL")} />
+        {CATEGORY_ORDER.map((c) => (
+          <TabButton
+            key={c}
+            label={CATEGORY_META[c].label}
+            count={tabCounts[c]}
+            accent={CATEGORY_META[c].accent}
+            active={tab === c}
+            onClick={() => setTab(c)}
+          />
+        ))}
+        {tab !== "ALL" && (
+          <span style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.35, minWidth: 0 }}>
+            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "1.8px", color: CATEGORY_META[tab].accent }}>
+              {CATEGORY_META[tab].action}
+            </span>
+            <span style={{ fontFamily: MONO, fontSize: 8, color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "46vw" }}>
+              {CATEGORY_META[tab].actionSub}
+            </span>
+          </span>
+        )}
       </div>
 
       {/* ---- body: 3 columns (wide) or stacked (narrow) ---- */}
@@ -582,14 +780,14 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
                   fontFamily: MONO,
                   fontSize: 10,
                   color: "#06121a",
-                  background: anyActive ? "#f3c25a" : SOURCED_COLOR,
+                  background: narrowed ? "#f3c25a" : SOURCED_COLOR,
                   padding: "2px 7px",
                   borderRadius: 3,
                   fontWeight: 600,
                   marginLeft: 8,
                 }}
               >
-                {anyActive ? `${visible.length} / ${total}` : total}
+                {narrowed ? `${visible.length} / ${total}` : total}
               </span>
             </>
           }
@@ -601,8 +799,10 @@ export default function CommandView({ suspects }: { suspects: PublicSuspect[] })
         </DraggablePanel>
       </div>
 
-      {/* record detail modal (lazy-loads detail from the wall-enforced route) */}
-      <SuspectModal suspect={selected} onClose={() => setSelected(null)} />
+      {/* record detail modal (lazy-loads detail from the wall-enforced route);
+          keyed by record id so reopening never flashes the previous record's
+          detail state */}
+      <SuspectModal key={selected?.id ?? "none"} suspect={selected} onClose={() => setSelected(null)} />
     </div>
   );
 }
@@ -867,10 +1067,111 @@ function IntegrityRow({
   );
 }
 
-function RecordCard({ s, onOpen }: { s: PublicSuspect; onOpen: () => void }) {
+function SearchBox({ value, onChange, onClear }: { value: string; onChange: (v: string) => void; onClear: () => void }) {
+  return (
+    <div style={{ position: "relative", flex: "1 1 200px", maxWidth: 360, minWidth: 170 }}>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            onClear();
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        placeholder="SEARCH NAME · ALIAS · KEYWORD"
+        aria-label="Search records by name, alias, title or category"
+        spellCheck={false}
+        autoComplete="off"
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          fontFamily: MONO,
+          fontSize: 10,
+          letterSpacing: "0.8px",
+          color: "#dce8ef",
+          background: "rgba(9,13,19,0.72)",
+          border: `1px solid ${hexA(SOURCED_COLOR, 0.35)}`,
+          borderRadius: 5,
+          padding: "7px 26px 7px 10px",
+          outline: "none",
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Clear search"
+          title="Clear search (Esc)"
+          style={{
+            ...btnReset,
+            position: "absolute",
+            right: 7,
+            top: "50%",
+            transform: "translateY(-50%)",
+            color: "#f3c25a",
+            fontFamily: MONO,
+            fontSize: 11,
+            fontWeight: 700,
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TabButton({
+  label,
+  count,
+  accent,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  accent: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Show ${label} records`}
+      style={{
+        ...btnReset,
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        fontFamily: LABEL,
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: "1.8px",
+        color: active ? "#06121a" : accent,
+        background: active ? accent : hexA(accent, 0.07),
+        border: `1px solid ${active ? accent : hexA(accent, 0.45)}`,
+        borderRadius: 4,
+        padding: "5px 12px",
+        transition: "background .15s",
+      }}
+    >
+      {label}
+      <span style={{ fontFamily: MONO, fontSize: 9, fontWeight: 600, color: active ? "#06121a" : "#aebfc9" }}>{count}</span>
+    </button>
+  );
+}
+
+function RecordCard({ group, onOpen }: { group: DisplayGroup; onOpen: () => void }) {
+  const s = group.primary;
+  const grouped = group.members.length > 1;
   const sourced = s.data_class === "official";
   const sc = statusColor(s);
   const subs = subjectsShort(s);
+  const cat = CATEGORY_META[s.category];
   const stateLabel = isMappable(s.resolved_state) ? (s.resolved_state as string) : "UNMAPPED";
   const locParts = [stateLabel, subs].filter(Boolean);
 
@@ -945,9 +1246,31 @@ function RecordCard({ s, onOpen }: { s: PublicSuspect; onOpen: () => void }) {
             {sourced ? "SOURCED" : "INFERRED"}
           </span>
         </div>
-        <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.4px", color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {locParts.join("  ·  ")}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span
+            style={{
+              fontFamily: MONO,
+              fontSize: 7,
+              fontWeight: 700,
+              letterSpacing: "0.8px",
+              color: cat.accent,
+              border: `1px solid ${hexA(cat.accent, 0.5)}`,
+              padding: "1px 5px",
+              borderRadius: 3,
+              flex: "0 0 auto",
+            }}
+          >
+            {cat.label}
+          </span>
+          <span style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.4px", color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
+            {locParts.join("  ·  ")}
+          </span>
         </div>
+        {grouped && (
+          <div style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "0.4px", color: "#f3d79a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            LISTED UNDER: {group.members.map((m) => subjectsShort(m)).join("  ·  ")}
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 1 }}>
           <span
             style={{
@@ -965,7 +1288,7 @@ function RecordCard({ s, onOpen }: { s: PublicSuspect; onOpen: () => void }) {
           >
             {statusLabel(s)}
           </span>
-          <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 600, color: "#f3c25a", flex: "0 0 auto" }}>{rewardShort(s)}</span>
+          <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 600, color: "#f3c25a", flex: "0 0 auto" }}>{formatReward(s.reward_text)}</span>
         </div>
       </div>
     </>

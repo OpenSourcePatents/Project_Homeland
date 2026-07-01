@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import type { PublicSuspect, SuspectDetail, PhysicalDescription } from "@/lib/public-suspect";
+import { CATEGORY_META } from "@/lib/category";
+import { formatReward } from "@/lib/reward";
+import { hexA } from "@/lib/color";
 
 /* Record detail modal. Opens on a record click; fetches rich detail on demand
    from the wall-enforced /api/suspect/[id] route. Three deliberate safeguards:
@@ -109,6 +112,8 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
   const armed = /ARMED/i.test((d?.warning_message ?? suspect.warning_message) ?? "");
   const stateCode = d?.resolved_state ?? suspect.resolved_state;
   const stateProvenance = d?.state_source ? SOURCE_LABEL[d.state_source] ?? "" : "";
+  // category is derived server-side (query layer) — the client only reads it
+  const cat = CATEGORY_META[d?.category ?? suspect.category];
 
   return (
     <div
@@ -209,6 +214,20 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
               >
                 ◤ SOURCED · FBI
               </span>
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 8.5,
+                  fontWeight: 700,
+                  letterSpacing: "1px",
+                  color: cat.accent,
+                  border: `1px solid ${hexA(cat.accent, 0.55)}`,
+                  padding: "3px 8px",
+                  borderRadius: 3,
+                }}
+              >
+                {cat.label}
+              </span>
               {unidentified && (
                 <span
                   style={{
@@ -240,7 +259,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
 
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 2 }}>
               <Field label="LOCATION" value={stateCode ? `${stateCode}${stateProvenance ? `  ·  ${stateProvenance}` : ""}` : "—"} />
-              <Field label="REWARD" value={(d?.reward_text ? d.reward_text.replace(/\s+/g, " ").trim() : suspect.reward_text) ?? "—"} valueColor="#f3c25a" wide />
+              <Field label="REWARD" value={formatReward(d?.reward_text ?? suspect.reward_text)} valueColor="#f3c25a" wide />
             </div>
           </div>
         </div>
@@ -312,6 +331,73 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
               <Narrative html={d.details_html} />
             </Section>
           )}
+
+          {/* display-level duplicate linkage: same name + shared DOB (G2) */}
+          {d && d.also_listed.length > 0 && (
+            <Section title="ALSO LISTED UNDER">
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {d.also_listed.map((r) => (
+                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: MONO, fontSize: 9.5, color: "#cdd9e2", flex: "1 1 auto", minWidth: 120 }}>
+                      {(r.subjects ?? []).filter(Boolean).join(" · ") || r.title || "UNCATEGORIZED"}
+                    </span>
+                    <a href={`/suspect/${r.id}`} target="_blank" rel="noopener noreferrer" style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.6px", color: SOURCED_COLOR, textDecoration: "none", border: `1px solid ${hexA(SOURCED_COLOR, 0.4)}`, padding: "2px 7px", borderRadius: 3 }}>
+                      FULL RECORD →
+                    </a>
+                    {r.source_url && (
+                      <a href={r.source_url} target="_blank" rel="noopener noreferrer" style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "0.6px", color: "#9fe7c8", textDecoration: "none", border: "1px solid rgba(159,231,200,0.4)", padding: "2px 7px", borderRadius: 3 }}>
+                        FBI SOURCE →
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p style={{ fontFamily: MONO, fontSize: 8, color: "#5d7180", margin: "8px 0 0", lineHeight: 1.5 }}>
+                The FBI lists this person on more than one program page (same name and date of birth). Each listing keeps
+                its own official source record — nothing is merged in the data.
+              </p>
+            </Section>
+          )}
+        </div>
+
+        {/* report routing — one-way to the FBI; this site stores no tips */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "12px 18px",
+            borderTop: "1px solid rgba(120,180,210,0.14)",
+            background: hexA(cat.accent, 0.06),
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+            <span style={{ fontFamily: LABEL, fontSize: 11, fontWeight: 700, letterSpacing: "1.8px", color: cat.accent }}>{cat.action}</span>
+            <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#aebfc9", lineHeight: 1.5 }}>
+              {cat.actionSub} 1-800-CALL-FBI (1-800-225-5324) — this site stores no tips.
+            </span>
+          </div>
+          <a
+            href="https://tips.fbi.gov"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              fontFamily: LABEL,
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "1px",
+              color: "#06121a",
+              background: cat.accent,
+              padding: "9px 16px",
+              borderRadius: 5,
+              textDecoration: "none",
+              flex: "0 0 auto",
+            }}
+          >
+            REPORT TO FBI → TIPS.FBI.GOV
+          </a>
         </div>
 
         {/* footer */}
@@ -329,9 +415,10 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
           <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>
             {d?.fbi_uid ? `FBI UID ${d.fbi_uid}` : suspect.fbi_uid ? `FBI UID ${suspect.fbi_uid}` : ""}
           </span>
-          {(d?.source_url ?? suspect.source_url) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <CopyLinkButton id={suspect.id} />
             <a
-              href={(d?.source_url ?? suspect.source_url) as string}
+              href={`/suspect/${suspect.id}`}
               target="_blank"
               rel="noopener noreferrer"
               style={{
@@ -339,19 +426,76 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
                 fontSize: 12,
                 fontWeight: 700,
                 letterSpacing: "1px",
-                color: "#06121a",
-                background: SOURCED_COLOR,
-                padding: "9px 16px",
+                color: SOURCED_COLOR,
+                border: `1px solid ${hexA(SOURCED_COLOR, 0.5)}`,
+                padding: "8px 14px",
                 borderRadius: 5,
                 textDecoration: "none",
               }}
             >
-              VIEW OFFICIAL FBI RECORD →
+              OPEN FULL RECORD →
             </a>
-          )}
+            {(d?.source_url ?? suspect.source_url) && (
+              <a
+                href={(d?.source_url ?? suspect.source_url) as string}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontFamily: LABEL,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: "1px",
+                  color: "#06121a",
+                  background: SOURCED_COLOR,
+                  padding: "9px 16px",
+                  borderRadius: 5,
+                  textDecoration: "none",
+                }}
+              >
+                VIEW OFFICIAL FBI RECORD →
+              </a>
+            )}
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function CopyLinkButton({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        const url = `${window.location.origin}/suspect/${id}`;
+        navigator.clipboard
+          ?.writeText(url)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1600);
+          })
+          .catch(() => {
+            /* clipboard unavailable (permissions/insecure context) — no-op */
+          });
+      }}
+      title="Copy a shareable link to this record"
+      style={{
+        appearance: "none",
+        cursor: "pointer",
+        fontFamily: LABEL,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: "1px",
+        color: copied ? "#9fe7c8" : "#cdd9e2",
+        background: "transparent",
+        border: `1px solid ${copied ? "rgba(159,231,200,0.6)" : "rgba(120,180,210,0.35)"}`,
+        padding: "8px 14px",
+        borderRadius: 5,
+      }}
+    >
+      {copied ? "COPIED ✓" : "COPY LINK"}
+    </button>
   );
 }
 

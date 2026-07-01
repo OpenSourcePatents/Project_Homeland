@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://homeland.opensourceforall.com"),
   title: "Project Homeland · Command",
   description: "Civil threat-convergence grid — tactical command dashboard.",
 };

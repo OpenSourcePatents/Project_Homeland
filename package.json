@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "tsx scripts/test-reward.ts && next build",
+    "test:reward": "tsx scripts/test-reward.ts",
     "start": "next start",
     "lint": "eslint",
     "db:check": "tsx scripts/db-check.ts",

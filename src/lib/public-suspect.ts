@@ -14,6 +14,13 @@ export type SuspectStatus = "na" | "captured" | "deceased" | "recovered" | "surr
 export type DataClass = "official" | "analytical";
 export type StateSource = "possible_states" | "description" | "field_office" | "none";
 
+/**
+ * Top-level view category. Derived ONCE, server-side, in the query layer
+ * (deriveCategory in queries.ts) from subjects[] + poster_classification —
+ * the client never re-derives it, only reads it.
+ */
+export type SuspectCategory = "WANTED" | "MISSING" | "SEEKING_INFO";
+
 export interface PublicSuspect {
   id: string;
   fbi_uid: string | null;
@@ -22,6 +29,10 @@ export interface PublicSuspect {
   title: string | null;
   aliases: string[] | null;
   subjects: string[] | null;
+  /** FBI DOB strings, verbatim. Used (with name) for display-level grouping only. */
+  dates_of_birth_used: string[] | null;
+  /** Server-derived top-level category — the client only reads this. */
+  category: SuspectCategory;
   status: SuspectStatus;
   /** CHAR(2), field-office-derived. Often null. The map prefers resolved_state. */
   primary_state: string | null;
@@ -57,6 +68,18 @@ export interface SuspectImage {
 }
 
 /**
+ * Another OFFICIAL record for the same person (same normalized name + at least
+ * one shared exact DOB value). Display-level linkage only — the DB rows stay
+ * separate; each keeps its own verbatim FBI source link.
+ */
+export interface LinkedRecord {
+  id: string;
+  title: string | null;
+  subjects: string[] | null;
+  source_url: string | null;
+}
+
+/**
  * Rich detail for the record modal. Fetched on demand from the wall-enforced
  * route handler (/api/suspect/[id]); the HTML narrative fields are SANITIZED
  * server-side, so the client may render them as HTML safely.
@@ -69,6 +92,13 @@ export interface SuspectDetail {
   title: string | null;
   aliases: string[] | null;
   subjects: string[] | null;
+  /** FBI DOB strings, verbatim. */
+  dates_of_birth_used: string[] | null;
+  field_offices: string[] | null;
+  /** Server-derived top-level category — the client only reads this. */
+  category: SuspectCategory;
+  /** Plain-text FBI short description (raw_payload->>'description'), verbatim. */
+  description: string | null;
   status: SuspectStatus;
   primary_state: string | null;
   resolved_state: string | null;
@@ -88,4 +118,6 @@ export interface SuspectDetail {
   details_html: string | null;
   /** True for John/Jane Doe / unidentified-suspect records — display with a misID caveat. */
   unidentified: boolean;
+  /** Other OFFICIAL records for the same person (name + shared DOB) — each with its own FBI link. */
+  also_listed: LinkedRecord[];
 }
