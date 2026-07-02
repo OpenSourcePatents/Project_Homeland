@@ -57,7 +57,23 @@ const SOURCE_LABEL: Record<string, string> = {
   none: "",
 };
 
+/** Compact treatment below this width (matches CommandView's PHONE_BREAKPOINT). */
+const PHONE_BREAKPOINT = 560;
+
+function useIsPhone(): boolean {
+  // lazy init is safe: the modal renders null on the server (no suspect is
+  // selected during SSR), so there is no markup to mismatch at hydration
+  const [phone, setPhone] = useState(() => (typeof window !== "undefined" ? window.innerWidth < PHONE_BREAKPOINT : false));
+  useEffect(() => {
+    const on = () => setPhone(window.innerWidth < PHONE_BREAKPOINT);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return phone;
+}
+
 export default function SuspectModal({ suspect, onClose }: { suspect: PublicSuspect | null; onClose: () => void }) {
+  const phone = useIsPhone();
   const [detail, setDetail] = useState<SuspectDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +144,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: 20,
+        padding: phone ? 8 : 20,
       }}
     >
       <div
@@ -173,12 +189,12 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
         </button>
 
         {/* header */}
-        <div style={{ display: "flex", gap: 16, padding: 18, borderBottom: "1px solid rgba(120,180,210,0.14)" }}>
+        <div style={{ display: "flex", gap: phone ? 12 : 16, padding: phone ? 12 : 18, borderBottom: "1px solid rgba(120,180,210,0.14)" }}>
           {/* enlarged photo */}
           <div
             style={{
-              width: 150,
-              height: 190,
+              width: phone ? 104 : 150,
+              height: phone ? 132 : 190,
               flex: "0 0 auto",
               borderRadius: 8,
               overflow: "hidden",
@@ -251,7 +267,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
               )}
             </div>
 
-            <h2 style={{ margin: 0, fontFamily: LABEL, fontSize: 23, fontWeight: 800, letterSpacing: "0.5px", color: "#eef4f8", lineHeight: 1.1 }}>{name}</h2>
+            <h2 style={{ margin: 0, fontFamily: LABEL, fontSize: phone ? 17 : 23, fontWeight: 800, letterSpacing: "0.5px", color: "#eef4f8", lineHeight: 1.15, overflowWrap: "anywhere" }}>{name}</h2>
 
             <div style={{ fontFamily: MONO, fontSize: 10, color: "#7c93a1", display: "flex", gap: 14, flexWrap: "wrap" }}>
               {(d?.subjects ?? suspect.subjects ?? []).length > 0 && <span>{(d?.subjects ?? suspect.subjects ?? []).join(" · ")}</span>}
@@ -265,7 +281,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
         </div>
 
         {/* body */}
-        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+        <div style={{ padding: phone ? 12 : 18, display: "flex", flexDirection: "column", gap: phone ? 14 : 18 }}>
           {loading && <div style={{ fontFamily: MONO, fontSize: 11, color: "#7c93a1" }}>Loading detail…</div>}
           {error && <div style={{ fontFamily: MONO, fontSize: 11, color: "#ff7a4e" }}>Couldn’t load detail ({error}).</div>}
 
@@ -367,7 +383,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
             alignItems: "center",
             justifyContent: "space-between",
             gap: 12,
-            padding: "12px 18px",
+            padding: phone ? "10px 12px" : "12px 18px",
             borderTop: "1px solid rgba(120,180,210,0.14)",
             background: hexA(cat.accent, 0.06),
             flexWrap: "wrap",
@@ -407,7 +423,7 @@ export default function SuspectModal({ suspect, onClose }: { suspect: PublicSusp
             alignItems: "center",
             justifyContent: "space-between",
             gap: 12,
-            padding: "14px 18px",
+            padding: phone ? "10px 12px" : "14px 18px",
             borderTop: "1px solid rgba(120,180,210,0.14)",
             flexWrap: "wrap",
           }}

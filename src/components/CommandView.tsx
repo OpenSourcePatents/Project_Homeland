@@ -28,6 +28,9 @@ const SOURCED_COLOR = "#5fe6ff";
 
 // Below this viewport width the three columns stack vertically (tablet/phone).
 const STACK_BREAKPOINT = 820;
+// Below this width the header, tab strip and modal switch to compact phone
+// treatments (3-row header, horizontally scrollable tabs).
+const PHONE_BREAKPOINT = 560;
 
 // ---- record-level helpers (operate on real fields) --------------------------
 
@@ -157,7 +160,7 @@ function ntasAccent(kind: string): string {
   return "#f3c25a"; // bulletin / other active advisory
 }
 
-function NtasBanner({ ntas }: { ntas: NtasStatus }) {
+function NtasBanner({ ntas, compact }: { ntas: NtasStatus; compact?: boolean }) {
   let dot: React.ReactNode;
   let label: string;
   let color: string;
@@ -205,24 +208,24 @@ function NtasBanner({ ntas }: { ntas: NtasStatus }) {
     >
       <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
         {dot}
-        <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color, whiteSpace: "nowrap" }}>{label}</span>
+        <span style={{ fontFamily: LABEL, fontSize: compact ? 9 : 10, fontWeight: 600, letterSpacing: compact ? "1.1px" : "1.6px", color, whiteSpace: "nowrap" }}>{label}</span>
         {snippet && (
           <span
             style={{
               fontFamily: MONO,
-              fontSize: 8.5,
+              fontSize: compact ? 8 : 8.5,
               color: "#aebfc9",
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
-              maxWidth: 260,
+              maxWidth: compact ? "38vw" : 260,
             }}
           >
             {snippet}
           </span>
         )}
       </span>
-      <span style={{ fontFamily: MONO, fontSize: 7, letterSpacing: "1.2px", color: "#5d7180", paddingLeft: 14 }}>SOURCE: DHS.GOV/NTAS</span>
+      <span style={{ fontFamily: MONO, fontSize: compact ? 6.5 : 7, letterSpacing: "1.2px", color: "#5d7180", paddingLeft: 14 }}>SOURCE: DHS.GOV/NTAS</span>
     </a>
   );
 }
@@ -235,6 +238,44 @@ function syncStampText(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "DATA SYNCED —";
   const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
   return `DATA SYNCED ${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
+}
+
+function TitleBlock({ compact }: { compact?: boolean }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+      <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: compact ? 13 : 15, letterSpacing: compact ? "2.4px" : "3.5px", color: "#eef4f8", whiteSpace: "nowrap" }}>
+        PROJECT HOMELAND
+      </span>
+      <span style={{ fontFamily: MONO, fontSize: compact ? 6.5 : 8, letterSpacing: compact ? "1.8px" : "2.6px", color: "#ff5667", marginTop: 4, whiteSpace: "nowrap" }}>
+        CIVIL THREAT-CONVERGENCE GRID
+      </span>
+    </div>
+  );
+}
+
+function SyncStampLinks({ syncedAt, compact }: { syncedAt: string | null; compact?: boolean }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.5, flex: "0 0 auto" }}>
+      <a
+        href="/about"
+        title="About this data — source, sync cadence, how to report"
+        style={{
+          fontFamily: MONO,
+          fontSize: compact ? 7.5 : 8.5,
+          letterSpacing: "1px",
+          color: "#9fdcef",
+          textDecoration: "none",
+          borderBottom: "1px dotted rgba(159,220,239,0.45)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {syncStampText(syncedAt)}
+      </a>
+      <a href="/about" style={{ fontFamily: MONO, fontSize: compact ? 7 : 7.5, letterSpacing: "1.6px", color: "#7c93a1", textDecoration: "none", whiteSpace: "nowrap" }}>
+        ABOUT · SOURCES →
+      </a>
+    </div>
+  );
 }
 
 // ---- viewport hook (responsive breakpoint + resize signal) ------------------
@@ -269,6 +310,7 @@ export default function CommandView({
 }) {
   const vp = useViewport();
   const wide = vp.width >= STACK_BREAKPOINT;
+  const phone = vp.width < PHONE_BREAKPOINT;
   // changes on any resize -> draggable panels reset to their docked positions
   const resetSignal = `${vp.width}x${vp.height}`;
 
@@ -599,63 +641,67 @@ export default function CommandView({
         style={{
           flex: "0 0 auto",
           zIndex: 50,
-          minHeight: 54,
+          minHeight: phone ? undefined : 54,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           flexWrap: "wrap",
-          gap: "8px 20px",
-          padding: "8px 20px",
+          gap: phone ? "7px 10px" : "8px 20px",
+          padding: phone ? "7px 12px" : "8px 20px",
           background: "linear-gradient(180deg, rgba(9,12,17,0.95), rgba(9,12,17,0.45))",
           backdropFilter: "blur(9px)",
           WebkitBackdropFilter: "blur(9px)",
           borderBottom: "1px solid rgba(243,194,90,0.22)",
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
-          <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: 15, letterSpacing: "3.5px", color: "#eef4f8" }}>PROJECT HOMELAND</span>
-          <span style={{ fontFamily: MONO, fontSize: 8, letterSpacing: "2.6px", color: "#ff5667", marginTop: 4 }}>CIVIL THREAT-CONVERGENCE GRID</span>
-        </div>
+        {phone ? (
+          /* compact 3-row phone header: title+clock / search / NTAS+stamp */
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%" }}>
+              <TitleBlock compact />
+              <LiveClock />
+            </div>
+            <SearchBox value={searchInput} onChange={setSearchInput} onClear={clearSearch} fullWidth />
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, width: "100%", flexWrap: "wrap" }}>
+              {/* live DHS NTAS status — server-fetched, never fabricated (spec A) */}
+              <NtasBanner ntas={ntas} compact />
+              <SyncStampLinks syncedAt={syncedAt} compact />
+            </div>
+          </>
+        ) : (
+          <>
+            <TitleBlock />
 
-        {/* search — pure client-side filtering of the loaded set (spec C) */}
-        <SearchBox value={searchInput} onChange={setSearchInput} onClear={clearSearch} />
+            {/* search — pure client-side filtering of the loaded set (spec C) */}
+            <SearchBox value={searchInput} onChange={setSearchInput} onClear={clearSearch} />
 
-        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: SOURCED_COLOR, boxShadow: `0 0 8px ${SOURCED_COLOR}`, animation: "hl-blink 2.2s ease-in-out infinite" }} />
-            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#bfe9ff" }}>FBI WANTED · LIVE</span>
-          </div>
-          {/* live DHS NTAS status — server-fetched, never fabricated (spec A) */}
-          <NtasBanner ntas={ntas} />
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.5 }}>
-            <a
-              href="/about"
-              title="About this data — source, sync cadence, how to report"
-              style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: "1px", color: "#9fdcef", textDecoration: "none", borderBottom: "1px dotted rgba(159,220,239,0.45)" }}
-            >
-              {syncStampText(syncedAt)}
-            </a>
-            <a href="/about" style={{ fontFamily: MONO, fontSize: 7.5, letterSpacing: "1.6px", color: "#7c93a1", textDecoration: "none" }}>
-              ABOUT · SOURCES →
-            </a>
-          </div>
-          <LiveClock />
-          <span
-            style={{
-              fontFamily: MONO,
-              fontSize: 8.5,
-              letterSpacing: "1.6px",
-              color: "#9fe7c8",
-              padding: "3px 8px",
-              border: "1px solid rgba(159,231,200,0.4)",
-              borderRadius: 3,
-            }}
-          >
-            ● SECURE
-          </span>
-        </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: SOURCED_COLOR, boxShadow: `0 0 8px ${SOURCED_COLOR}`, animation: "hl-blink 2.2s ease-in-out infinite" }} />
+                <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 600, letterSpacing: "1.6px", color: "#bfe9ff" }}>FBI WANTED · LIVE</span>
+              </div>
+              {/* live DHS NTAS status — server-fetched, never fabricated (spec A) */}
+              <NtasBanner ntas={ntas} />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <SyncStampLinks syncedAt={syncedAt} />
+              <LiveClock />
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 8.5,
+                  letterSpacing: "1.6px",
+                  color: "#9fe7c8",
+                  padding: "3px 8px",
+                  border: "1px solid rgba(159,231,200,0.4)",
+                  borderRadius: 3,
+                }}
+              >
+                ● SECURE
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ---- category tab strip: WANTED / MISSING / SEEKING-INFO (spec D) ---- */}
@@ -664,34 +710,54 @@ export default function CommandView({
           flex: "0 0 auto",
           zIndex: 40,
           display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexWrap: "wrap",
-          padding: "7px 20px",
+          flexDirection: "column",
+          gap: 5,
+          padding: phone ? "6px 12px" : "7px 20px",
           background: "rgba(9,12,17,0.72)",
           borderBottom: "1px solid rgba(120,180,210,0.14)",
         }}
       >
-        <TabButton label="ALL" count={preTab.length} accent={SOURCED_COLOR} active={tab === "ALL"} onClick={() => setTab("ALL")} />
-        {CATEGORY_ORDER.map((c) => (
-          <TabButton
-            key={c}
-            label={CATEGORY_META[c].label}
-            count={tabCounts[c]}
-            accent={CATEGORY_META[c].accent}
-            active={tab === c}
-            onClick={() => setTab(c)}
-          />
-        ))}
-        {tab !== "ALL" && (
-          <span style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.35, minWidth: 0 }}>
-            <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "1.8px", color: CATEGORY_META[tab].accent }}>
+        <div
+          className={phone ? "hl-scroll-x" : undefined}
+          style={
+            phone
+              ? // one scrollable row on phones — tabs never wrap into a tall stack
+                { display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }
+              : { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }
+          }
+        >
+          <TabButton label="ALL" count={preTab.length} accent={SOURCED_COLOR} active={tab === "ALL"} onClick={() => setTab("ALL")} compact={phone} />
+          {CATEGORY_ORDER.map((c) => (
+            <TabButton
+              key={c}
+              label={CATEGORY_META[c].label}
+              count={tabCounts[c]}
+              accent={CATEGORY_META[c].accent}
+              active={tab === c}
+              onClick={() => setTab(c)}
+              compact={phone}
+            />
+          ))}
+          {!phone && tab !== "ALL" && (
+            <span style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.35, minWidth: 0 }}>
+              <span style={{ fontFamily: LABEL, fontSize: 10, fontWeight: 700, letterSpacing: "1.8px", color: CATEGORY_META[tab].accent }}>
+                {CATEGORY_META[tab].action}
+              </span>
+              <span style={{ fontFamily: MONO, fontSize: 8, color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "46vw" }}>
+                {CATEGORY_META[tab].actionSub}
+              </span>
+            </span>
+          )}
+        </div>
+        {phone && tab !== "ALL" && (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0, lineHeight: 1.3 }}>
+            <span style={{ fontFamily: LABEL, fontSize: 9, fontWeight: 700, letterSpacing: "1.4px", color: CATEGORY_META[tab].accent, flex: "0 0 auto" }}>
               {CATEGORY_META[tab].action}
             </span>
-            <span style={{ fontFamily: MONO, fontSize: 8, color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "46vw" }}>
+            <span style={{ fontFamily: MONO, fontSize: 7.5, color: "#7c93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
               {CATEGORY_META[tab].actionSub}
             </span>
-          </span>
+          </div>
         )}
       </div>
 
@@ -713,8 +779,8 @@ export default function CommandView({
                 minHeight: 0,
                 display: "flex",
                 flexDirection: "column",
-                gap: 12,
-                padding: 12,
+                gap: phone ? 10 : 12,
+                padding: phone ? 10 : 12,
                 overflowY: "auto",
                 overflowX: "hidden",
               }
@@ -747,14 +813,14 @@ export default function CommandView({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              gap: 16,
+              gap: phone ? 10 : 16,
               flexWrap: "wrap",
               background: "rgba(9,13,19,0.6)",
               backdropFilter: "blur(8px)",
               WebkitBackdropFilter: "blur(8px)",
               border: "1px solid rgba(120,180,210,0.16)",
               borderRadius: 7,
-              padding: "7px 14px",
+              padding: phone ? "6px 10px" : "7px 14px",
             }}
           >
             <span style={{ fontFamily: LABEL, fontSize: 9, fontWeight: 700, letterSpacing: "2px", color: "#7f9aab" }}>MAP KEY</span>
@@ -766,7 +832,9 @@ export default function CommandView({
               <span style={{ width: 11, height: 11, borderRadius: 3, background: hexA(SOURCED_COLOR, 0.12), border: `1.5px solid ${hexA(SOURCED_COLOR, 0.8)}` }} />
               <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#aebfc9" }}>STATE WITH RECORDS</span>
             </div>
-            <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>CLICK A STATE TO FILTER · {unmapped} UNMAPPED</span>
+            <span style={{ fontFamily: MONO, fontSize: 8.5, color: "#5d7180" }}>
+              {phone ? `TAP A STATE TO FILTER · ${unmapped} UNMAPPED` : `CLICK A STATE TO FILTER · ${unmapped} UNMAPPED`}
+            </span>
           </div>
         </div>
 
@@ -1067,9 +1135,19 @@ function IntegrityRow({
   );
 }
 
-function SearchBox({ value, onChange, onClear }: { value: string; onChange: (v: string) => void; onClear: () => void }) {
+function SearchBox({
+  value,
+  onChange,
+  onClear,
+  fullWidth,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onClear: () => void;
+  fullWidth?: boolean;
+}) {
   return (
-    <div style={{ position: "relative", flex: "1 1 200px", maxWidth: 360, minWidth: 170 }}>
+    <div style={fullWidth ? { position: "relative", width: "100%" } : { position: "relative", flex: "1 1 200px", maxWidth: 360, minWidth: 170 }}>
       <input
         type="text"
         value={value}
@@ -1130,12 +1208,14 @@ function TabButton({
   accent,
   active,
   onClick,
+  compact,
 }: {
   label: string;
   count: number;
   accent: string;
   active: boolean;
   onClick: () => void;
+  compact?: boolean;
 }) {
   return (
     <button
@@ -1146,21 +1226,23 @@ function TabButton({
         ...btnReset,
         display: "flex",
         alignItems: "center",
-        gap: 7,
+        gap: compact ? 5 : 7,
+        flex: "0 0 auto",
         fontFamily: LABEL,
-        fontSize: 11,
+        fontSize: compact ? 10 : 11,
         fontWeight: 700,
-        letterSpacing: "1.8px",
+        letterSpacing: compact ? "1.1px" : "1.8px",
+        whiteSpace: "nowrap",
         color: active ? "#06121a" : accent,
         background: active ? accent : hexA(accent, 0.07),
         border: `1px solid ${active ? accent : hexA(accent, 0.45)}`,
         borderRadius: 4,
-        padding: "5px 12px",
+        padding: compact ? "4px 9px" : "5px 12px",
         transition: "background .15s",
       }}
     >
       {label}
-      <span style={{ fontFamily: MONO, fontSize: 9, fontWeight: 600, color: active ? "#06121a" : "#aebfc9" }}>{count}</span>
+      <span style={{ fontFamily: MONO, fontSize: compact ? 8.5 : 9, fontWeight: 600, color: active ? "#06121a" : "#aebfc9" }}>{count}</span>
     </button>
   );
 }

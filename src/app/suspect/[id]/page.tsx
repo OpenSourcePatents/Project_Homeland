@@ -176,7 +176,7 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
 
   return (
     <div style={{ position: "fixed", inset: 0, overflowY: "auto", background: "#04060a", color: "#eef4f8" }}>
-      <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 22px 70px" }}>
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px clamp(12px, 4vw, 22px) 70px" }}>
         {/* top bar */}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 22 }}>
           <Link href="/" style={{ fontFamily: MONO, fontSize: 10, letterSpacing: "1.2px", color: CYAN, textDecoration: "none" }}>
@@ -190,13 +190,13 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
         {/* record card */}
         <div style={{ background: "linear-gradient(180deg, rgba(11,16,22,0.98), rgba(8,11,16,0.98))", border: `1px solid ${hexA(cat.accent, 0.35)}`, borderRadius: 12 }}>
           {/* header */}
-          <div style={{ padding: "20px 22px", borderBottom: "1px solid rgba(120,180,210,0.14)" }}>
+          <div style={{ padding: "18px clamp(12px, 4vw, 22px)", borderBottom: "1px solid rgba(120,180,210,0.14)" }}>
             <div style={{ fontFamily: LABEL, fontSize: 11, fontWeight: 700, letterSpacing: "2.6px", color: cat.accent, marginBottom: 10 }}>{kicker}</div>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
               <div
                 style={{
-                  width: 170,
-                  height: 214,
+                  width: "clamp(116px, 32vw, 170px)",
+                  height: "clamp(146px, 40vw, 214px)",
                   flex: "0 0 auto",
                   borderRadius: 8,
                   overflow: "hidden",
@@ -228,7 +228,7 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
                   <Chip text={statusLabel(d)} color={d.status === "na" ? "#f3c25a" : "#8aa0ad"} />
                 </div>
 
-                <h1 style={{ margin: 0, fontFamily: LABEL, fontSize: 28, fontWeight: 800, letterSpacing: "0.5px", lineHeight: 1.1 }}>{name}</h1>
+                <h1 style={{ margin: 0, fontFamily: LABEL, fontSize: "clamp(19px, 5.5vw, 28px)", fontWeight: 800, letterSpacing: "0.5px", lineHeight: 1.15, overflowWrap: "anywhere" }}>{name}</h1>
 
                 {subjects.length > 0 && (
                   <div style={{ fontFamily: MONO, fontSize: 10, color: "#7c93a1" }}>{subjects.join(" · ")}</div>
@@ -255,7 +255,7 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
           </div>
 
           {/* body */}
-          <div style={{ padding: "20px 22px" }}>
+          <div style={{ padding: "18px clamp(12px, 4vw, 22px)" }}>
             {/* FBI warning — prominent when present, verbatim */}
             {d.warning_message && (
               <div
@@ -392,7 +392,7 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
-              padding: "14px 22px",
+              padding: "12px clamp(12px, 4vw, 22px)",
               borderTop: "1px solid rgba(120,180,210,0.14)",
               background: hexA(cat.accent, 0.06),
               flexWrap: "wrap",
@@ -432,7 +432,7 @@ export default async function SuspectPermalink({ params }: { params: Promise<{ i
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
-              padding: "14px 22px",
+              padding: "12px clamp(12px, 4vw, 22px)",
               borderTop: "1px solid rgba(120,180,210,0.14)",
               flexWrap: "wrap",
             }}

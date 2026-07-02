@@ -46,11 +46,11 @@ export default async function AboutPage() {
 
   return (
     <div style={{ position: "fixed", inset: 0, overflowY: "auto", background: "#04060a", color: "#eef4f8" }}>
-      <div style={{ maxWidth: 780, margin: "0 auto", padding: "40px 24px 80px" }}>
+      <div style={{ maxWidth: 780, margin: "0 auto", padding: "34px clamp(14px, 5vw, 24px) 80px" }}>
         {/* header */}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 8 }}>
           <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-            <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: 20, letterSpacing: "3.5px" }}>PROJECT HOMELAND</span>
+            <span style={{ fontFamily: LABEL, fontWeight: 800, fontSize: "clamp(16px, 4.5vw, 20px)", letterSpacing: "3px" }}>PROJECT HOMELAND</span>
             <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "2.6px", color: "#ff5667", marginTop: 6 }}>ABOUT THIS DATA</span>
           </div>
           <Link href="/" style={{ fontFamily: MONO, fontSize: 10, letterSpacing: "1.2px", color: CYAN, textDecoration: "none" }}>

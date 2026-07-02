@@ -26,6 +26,15 @@ body {
   overflow: hidden;
 }
 
+/* horizontally scrollable rows (phone tab strip) — content scrolls, no visible bar */
+.hl-scroll-x {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.hl-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
 /* ---- Project Homeland command/map animations ---- */
 @keyframes hl-blink {
   0%,
