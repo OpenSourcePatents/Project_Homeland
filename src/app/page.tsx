@@ -1,6 +1,7 @@
 import CommandView from "@/components/CommandView";
 import { getPublicSuspects, getDataFreshness } from "@/lib/queries";
 import { getNtasStatus } from "@/lib/ntas";
+import { getDojWire } from "@/lib/doj";
 
 // Live dashboard: fetch on every request rather than baking data at build time.
 export const dynamic = "force-dynamic";
@@ -11,14 +12,16 @@ export const dynamic = "force-dynamic";
  * touches the db client (DATABASE_URL) — then hands the plain, serializable result
  * to the client view. DATABASE_URL never reaches the browser bundle.
  *
- * The DHS NTAS status is fetched here too (hourly-cached fetch, see lib/ntas.ts)
- * so the client banner only ever renders a server-verified state.
+ * The DHS NTAS status and DOJ enforcement wire are fetched here too (cached
+ * fetches, see lib/ntas.ts and lib/doj.ts) so the client only ever renders
+ * server-verified states.
  */
 export default async function Home() {
-  const [suspects, ntas, syncedAt] = await Promise.all([
+  const [suspects, ntas, syncedAt, doj] = await Promise.all([
     getPublicSuspects(),
     getNtasStatus(),
     getDataFreshness(),
+    getDojWire(),
   ]);
-  return <CommandView suspects={suspects} ntas={ntas} syncedAt={syncedAt} />;
+  return <CommandView suspects={suspects} ntas={ntas} syncedAt={syncedAt} doj={doj} />;
 }

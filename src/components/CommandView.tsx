@@ -5,6 +5,7 @@ import HomelandMap from "@/components/HomelandMap";
 import SuspectModal from "@/components/SuspectModal";
 import type { PublicSuspect, SuspectCategory } from "@/lib/public-suspect";
 import type { NtasStatus } from "@/lib/ntas"; // type-only: erased at compile time, no server-only import
+import type { DojWire } from "@/lib/doj"; // type-only, same pattern
 import { CATEGORY_META, CATEGORY_ORDER } from "@/lib/category";
 import { formatReward } from "@/lib/reward";
 import { groupForDisplay, type DisplayGroup } from "@/lib/grouping";
@@ -240,6 +241,114 @@ function syncStampText(iso: string | null): string {
   return `DATA SYNCED ${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
 }
 
+// ---- DOJ enforcement wire (data fetched + verified server-side, lib/doj.ts) --
+
+const WIRE_MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+function wireDateLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${pad2(d.getUTCDate())} ${WIRE_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+
+function WireBody({ doj }: { doj: DojWire }) {
+  const attribution = (
+    <div style={{ flex: "0 0 auto", fontFamily: MONO, fontSize: 6.5, letterSpacing: "1.2px", color: "#5d7180", padding: "7px 12px 0" }}>
+      SOURCE: JUSTICE.GOV · US DEPT OF JUSTICE PRESS RELEASES
+    </div>
+  );
+  if (doj.state === "unavailable") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {attribution}
+        <a
+          href="https://www.justice.gov/news"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "block",
+            fontFamily: MONO,
+            fontSize: 9.5,
+            letterSpacing: "1.5px",
+            color: "#7c93a1",
+            textAlign: "center",
+            padding: "18px 12px",
+            textDecoration: "none",
+          }}
+        >
+          ◬ WIRE UNAVAILABLE
+          <span style={{ display: "block", fontFamily: MONO, fontSize: 7.5, letterSpacing: "1px", marginTop: 6, color: "#5d7180" }}>
+            JUSTICE.GOV/NEWS →
+          </span>
+        </a>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
+      {attribution}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", padding: "0 12px 8px" }}>
+      {doj.items.slice(0, 8).map((it, i) => (
+        <a
+          key={`${it.url}-${i}`}
+          href={it.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={it.title}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+            padding: "7px 2px",
+            borderBottom: "1px solid rgba(120,180,210,0.1)",
+            textDecoration: "none",
+            minWidth: 0,
+          }}
+        >
+          <span style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+            <span style={{ fontFamily: MONO, fontSize: 7.5, fontWeight: 600, letterSpacing: "0.8px", color: SOURCED_COLOR, flex: "0 0 auto" }}>
+              {wireDateLabel(it.dateISO)}
+            </span>
+            {it.component && (
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 7,
+                  letterSpacing: "0.6px",
+                  color: "#7c93a1",
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  minWidth: 0,
+                }}
+              >
+                {it.component}
+              </span>
+            )}
+          </span>
+          {/* verbatim DOJ headline — plain text only, stripped server-side */}
+          <span
+            style={{
+              fontFamily: LABEL,
+              fontSize: 10.5,
+              fontWeight: 600,
+              letterSpacing: "0.4px",
+              color: "#dce8ef",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {it.title}
+          </span>
+        </a>
+      ))}
+      </div>
+    </div>
+  );
+}
+
 function TitleBlock({ compact }: { compact?: boolean }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
@@ -303,10 +412,12 @@ export default function CommandView({
   suspects,
   ntas,
   syncedAt,
+  doj,
 }: {
   suspects: PublicSuspect[];
   ntas: NtasStatus;
   syncedAt: string | null;
+  doj: DojWire;
 }) {
   const vp = useViewport();
   const wide = vp.width >= STACK_BREAKPOINT;
@@ -786,10 +897,31 @@ export default function CommandView({
               }
         }
       >
-        {/* LEFT panel — docked left, draggable on wide screens */}
-        <DraggablePanel title="THREAT INTEL" draggable={wide} resetSignal={resetSignal} style={{ maxHeight: wide ? undefined : "52dvh" }}>
-          {leftBody}
-        </DraggablePanel>
+        {/* LEFT rail — intel panel + DOJ enforcement wire, docked left.
+            wide: the two panels share the grid column via a flex wrapper (the
+            column height is definite, so flex sizing resolves). stacked: the
+            wrapper's intrinsic height collapses, so the panels sit directly in
+            the scroll column like every other stacked block, wire with an
+            explicit height. */}
+        {wide ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0, minWidth: 0 }}>
+            <DraggablePanel title="THREAT INTEL" draggable resetSignal={resetSignal} style={{ flex: "1 1 auto", minHeight: 0 }}>
+              {leftBody}
+            </DraggablePanel>
+            <DraggablePanel title="ENFORCEMENT WIRE" draggable resetSignal={resetSignal} style={{ flex: "0 1 auto", minHeight: 0, maxHeight: "40%" }}>
+              <WireBody doj={doj} />
+            </DraggablePanel>
+          </div>
+        ) : (
+          <>
+            <DraggablePanel title="THREAT INTEL" draggable={false} resetSignal={resetSignal} style={{ maxHeight: "52dvh" }}>
+              {leftBody}
+            </DraggablePanel>
+            <DraggablePanel title="ENFORCEMENT WIRE" draggable={false} resetSignal={resetSignal} style={{ height: "min(38dvh, 350px)", flex: "0 0 auto" }}>
+              <WireBody doj={doj} />
+            </DraggablePanel>
+          </>
+        )}
 
         {/* CENTER — map (centerpiece) + legend, never overlapped by panels */}
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 8, minWidth: 0, minHeight: wide ? 0 : "46dvh", order: wide ? 0 : -1 }}>
