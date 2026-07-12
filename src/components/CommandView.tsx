@@ -993,7 +993,10 @@ export default function CommandView({
           }
           draggable={wide}
           resetSignal={resetSignal}
-          style={{ maxHeight: wide ? undefined : "70dvh" }}
+          // stacked: explicit height (like the wire panel) — the panel's
+          // intrinsic height collapses in the scroll column otherwise, leaving
+          // the record list empty on phones/tablets
+          style={wide ? undefined : { height: "70dvh", flex: "0 0 auto" }}
         >
           {rightBody}
         </DraggablePanel>
