@@ -32,6 +32,9 @@ const STACK_BREAKPOINT = 820;
 // Below this width the header, tab strip and modal switch to compact phone
 // treatments (3-row header, horizontally scrollable tabs).
 const PHONE_BREAKPOINT = 560;
+// At or below this width the four category tabs stop scrolling and instead
+// share one row (flex: 1 each, tighter type, "SEEKING INFO" → "SEEKING").
+const TINY_BREAKPOINT = 430;
 
 // ---- record-level helpers (operate on real fields) --------------------------
 
@@ -422,6 +425,7 @@ export default function CommandView({
   const vp = useViewport();
   const wide = vp.width >= STACK_BREAKPOINT;
   const phone = vp.width < PHONE_BREAKPOINT;
+  const tiny = vp.width <= TINY_BREAKPOINT;
   // changes on any resize -> draggable panels reset to their docked positions
   const resetSignal = `${vp.width}x${vp.height}`;
 
@@ -829,24 +833,29 @@ export default function CommandView({
         }}
       >
         <div
-          className={phone ? "hl-scroll-x" : undefined}
+          className={phone && !tiny ? "hl-scroll-x" : undefined}
           style={
-            phone
-              ? // one scrollable row on phones — tabs never wrap into a tall stack
-                { display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }
-              : { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }
+            tiny
+              ? // ≤430px: all four tabs share the row (flex: 1 each), no scroll
+                { display: "flex", alignItems: "center", gap: 4, flexWrap: "nowrap" }
+              : phone
+                ? // one scrollable row on phones — tabs never wrap into a tall stack
+                  { display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }
+                : { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }
           }
         >
-          <TabButton label="ALL" count={preTab.length} accent={SOURCED_COLOR} active={tab === "ALL"} onClick={() => setTab("ALL")} compact={phone} />
+          <TabButton label="ALL" count={preTab.length} accent={SOURCED_COLOR} active={tab === "ALL"} onClick={() => setTab("ALL")} compact={phone} tiny={tiny} />
           {CATEGORY_ORDER.map((c) => (
             <TabButton
               key={c}
-              label={CATEGORY_META[c].label}
+              // abbreviate the long label so four tabs fit one 430px row
+              label={tiny ? CATEGORY_META[c].label.split(" ")[0] : CATEGORY_META[c].label}
               count={tabCounts[c]}
               accent={CATEGORY_META[c].accent}
               active={tab === c}
               onClick={() => setTab(c)}
               compact={phone}
+              tiny={tiny}
             />
           ))}
           {!phone && tab !== "ALL" && (
@@ -1344,6 +1353,7 @@ function TabButton({
   active,
   onClick,
   compact,
+  tiny,
 }: {
   label: string;
   count: number;
@@ -1351,6 +1361,7 @@ function TabButton({
   active: boolean;
   onClick: () => void;
   compact?: boolean;
+  tiny?: boolean;
 }) {
   return (
     <button
@@ -1361,23 +1372,27 @@ function TabButton({
         ...btnReset,
         display: "flex",
         alignItems: "center",
-        gap: compact ? 5 : 7,
-        flex: "0 0 auto",
+        justifyContent: tiny ? "center" : undefined,
+        gap: tiny ? 4 : compact ? 5 : 7,
+        // tiny: the four tabs split the row evenly instead of scrolling
+        flex: tiny ? "1 1 0" : "0 0 auto",
+        minWidth: tiny ? 0 : undefined,
         fontFamily: LABEL,
-        fontSize: compact ? 10 : 11,
+        fontSize: tiny ? 9 : compact ? 10 : 11,
         fontWeight: 700,
-        letterSpacing: compact ? "1.1px" : "1.8px",
+        letterSpacing: tiny ? "0.4px" : compact ? "1.1px" : "1.8px",
         whiteSpace: "nowrap",
         color: active ? "#06121a" : accent,
         background: active ? accent : hexA(accent, 0.07),
         border: `1px solid ${active ? accent : hexA(accent, 0.45)}`,
         borderRadius: 4,
-        padding: compact ? "4px 9px" : "5px 12px",
+        padding: tiny ? "4px 3px" : compact ? "4px 9px" : "5px 12px",
         transition: "background .15s",
       }}
     >
-      {label}
-      <span style={{ fontFamily: MONO, fontSize: compact ? 8.5 : 9, fontWeight: 600, color: active ? "#06121a" : "#aebfc9" }}>{count}</span>
+      {/* label may truncate under extreme squeeze; the count never does */}
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+      <span style={{ fontFamily: MONO, fontSize: tiny ? 8 : compact ? 8.5 : 9, fontWeight: 600, color: active ? "#06121a" : "#aebfc9", flex: "0 0 auto" }}>{count}</span>
     </button>
   );
 }
