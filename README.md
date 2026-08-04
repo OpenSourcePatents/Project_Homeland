@@ -1,4 +1,4 @@
-Get them, terrorists.
+ITs called project homeland, because terrorist Tracker sounded to "put me on a watchlist"
 
 This was a project build to test some new things. mainly non-Supabase-powered tables and Postgres. In this case, neon. I also wanted to try some new design elements. lol 
 
